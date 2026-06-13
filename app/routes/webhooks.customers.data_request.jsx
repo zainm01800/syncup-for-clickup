@@ -1,5 +1,4 @@
 import { authenticate } from "../shopify.server";
-import prisma from "../db.server";
 
 // GDPR mandatory: respond to customer data access requests.
 // We store Shopify order IDs linked to ClickUp task IDs — no PII is stored server-side.
