@@ -10,7 +10,8 @@ import {
   getRecentActivity,
   logActivity,
 } from "../clickup.server";
-import { getOrCreateSubscription, PLANS } from "../billing.server";
+import { getOrCreateSubscription } from "../billing.server";
+import { PLANS } from "../plans";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);

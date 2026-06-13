@@ -8,8 +8,8 @@ import {
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { PLANS } from "../plans";
 import {
-  PLANS,
   getOrCreateSubscription,
   createShopifySubscription,
   cancelExistingSubscription,

@@ -3,68 +3,63 @@ import {
   getConnection,
   createTask,
   recordOrderTask,
-  updateOrderTaskStatus,
   withRetry,
   logActivity,
 } from "../clickup.server";
 import { getOrCreateSubscription, isWithinLimit, incrementOrderCount } from "../billing.server";
 
-function buildTaskDescription(order, adminOrderUrl) {
-  const lines = [];
-
-  // Line items — include variant title when present
-  lines.push("📦 Line items:");
-  if (order.line_items?.length > 0) {
-    for (const item of order.line_items) {
-      const variant = item.variant_title ? ` (${item.variant_title})` : "";
-      lines.push(`  • ${item.quantity}x ${item.title}${variant}`);
-    }
-  } else {
-    lines.push("  (no items)");
-  }
-
-  lines.push("");
-
-  // Pricing
-  const currency = order.currency || "";
-  const subtotal = order.subtotal_price ?? "0.00";
-  const shipping =
-    order.shipping_lines?.reduce(
-      (sum, s) => sum + parseFloat(s.price || "0"),
-      0
-    ).toFixed(2) ?? "0.00";
-  const total = order.total_price ?? "0.00";
-
-  lines.push(`💰 Subtotal: ${currency} ${subtotal}`);
-  lines.push(`🚚 Shipping: ${currency} ${shipping}`);
-  lines.push(`   Total:    ${currency} ${total}`);
-  lines.push("");
-
-  // Customer
-  const email = order.customer?.email || order.email || null;
-  if (email) lines.push(`📧 Customer: ${email}`);
-
-  // Shipping address
-  const addr = order.shipping_address;
-  if (addr) {
-    const addrParts = [
-      addr.address1,
-      addr.address2,
-      [addr.city, addr.province_code || addr.province, addr.zip]
-        .filter(Boolean)
-        .join(", "),
-      addr.country,
-    ].filter(Boolean);
-    lines.push(`📍 Ship to: ${addrParts.join(", ")}`);
-  }
-
-  lines.push("");
-  lines.push(`🔗 View order: ${adminOrderUrl}`);
-
-  return lines.join("\n");
-}
-
 export const action = async ({ request }) => {
+  function buildTaskDescription(order, adminOrderUrl) {
+    const lines = [];
+
+    lines.push("📦 Line items:");
+    if (order.line_items?.length > 0) {
+      for (const item of order.line_items) {
+        const variant = item.variant_title ? ` (${item.variant_title})` : "";
+        lines.push(`  • ${item.quantity}x ${item.title}${variant}`);
+      }
+    } else {
+      lines.push("  (no items)");
+    }
+
+    lines.push("");
+
+    const currency = order.currency || "";
+    const subtotal = order.subtotal_price ?? "0.00";
+    const shipping =
+      order.shipping_lines?.reduce(
+        (sum, s) => sum + parseFloat(s.price || "0"),
+        0
+      ).toFixed(2) ?? "0.00";
+    const total = order.total_price ?? "0.00";
+
+    lines.push(`💰 Subtotal: ${currency} ${subtotal}`);
+    lines.push(`🚚 Shipping: ${currency} ${shipping}`);
+    lines.push(`   Total:    ${currency} ${total}`);
+    lines.push("");
+
+    const email = order.customer?.email || order.email || null;
+    if (email) lines.push(`📧 Customer: ${email}`);
+
+    const addr = order.shipping_address;
+    if (addr) {
+      const addrParts = [
+        addr.address1,
+        addr.address2,
+        [addr.city, addr.province_code || addr.province, addr.zip]
+          .filter(Boolean)
+          .join(", "),
+        addr.country,
+      ].filter(Boolean);
+      lines.push(`📍 Ship to: ${addrParts.join(", ")}`);
+    }
+
+    lines.push("");
+    lines.push(`🔗 View order: ${adminOrderUrl}`);
+
+    return lines.join("\n");
+  }
+
   const { shop, topic, payload } = await authenticate.webhook(request);
   console.log(`Received ${topic} webhook for ${shop}`);
 
