@@ -95,7 +95,7 @@ export async function createShopifySubscription(admin, shop, planKey) {
           },
         ],
         returnUrl,
-        test: true,
+        test: false,
       },
     }
   );

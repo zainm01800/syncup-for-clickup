@@ -108,8 +108,8 @@ export default function PrivacyPolicy() {
           <p style={styles.p}>
             For privacy-related questions or data deletion requests, contact us
             at:{" "}
-            <a href="mailto:privacy@syncupforclickup.com" style={styles.link}>
-              privacy@syncupforclickup.com
+            <a href="mailto:zain.manda@gmail.com" style={styles.link}>
+              zain.manda@gmail.com
             </a>
           </p>
         </article>
