@@ -55,3 +55,17 @@ model OrderTask {
   @@unique([shopDomain, shopifyOrderId])
   @@map("order_tasks")
 }
+
+// Tracks the billing plan and monthly order usage for each shop.
+model Subscription {
+  shopDomain        String   @id @map("shop_domain")
+  planName          String   @default("free") @map("plan_name")
+  shopifyChargeId   String?  @map("shopify_charge_id")
+  status            String   @default("active")
+  ordersThisMonth   Int      @default(0) @map("orders_this_month")
+  billingCycleStart DateTime @default(now()) @map("billing_cycle_start")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("subscriptions")
+}

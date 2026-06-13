@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Form, useLoaderData, useActionData, useNavigation } from "react-router";
+import { Form, useLoaderData, useActionData, useNavigation, Link } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, registerWebhooks } from "../shopify.server";
 import {
@@ -8,13 +8,12 @@ import {
   saveList,
   disconnect,
 } from "../clickup.server";
+import { getOrCreateSubscription, PLANS } from "../billing.server";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  // Re-register webhooks on every app load so they always point to the current
-  // tunnel URL during development (and remain correct in production).
   try {
     const result = await registerWebhooks({ session });
     console.log("registerWebhooks result:", JSON.stringify(result));
@@ -22,7 +21,10 @@ export const loader = async ({ request }) => {
     console.error("registerWebhooks error:", e);
   }
 
-  const connection = await getConnection(shop);
+  const [connection, subscription] = await Promise.all([
+    getConnection(shop),
+    getOrCreateSubscription(shop),
+  ]);
 
   let lists = [];
   let listError = null;
@@ -37,6 +39,9 @@ export const loader = async ({ request }) => {
     }
   }
 
+  const url = new URL(request.url);
+  const billingSuccess = url.searchParams.get("billing_success") === "1";
+
   return {
     shop,
     connected: Boolean(connection?.accessToken),
@@ -44,6 +49,12 @@ export const loader = async ({ request }) => {
     selectedListName: connection?.listName || "",
     lists,
     listError,
+    subscription: {
+      planName: subscription.planName,
+      ordersThisMonth: subscription.ordersThisMonth,
+      status: subscription.status,
+    },
+    billingSuccess,
   };
 };
 
@@ -85,13 +96,25 @@ const COLORS = {
 };
 
 export default function Index() {
-  const { shop, connected, selectedListId, selectedListName, lists, listError } =
-    useLoaderData();
+  const {
+    shop,
+    connected,
+    selectedListId,
+    selectedListName,
+    lists,
+    listError,
+    subscription,
+    billingSuccess,
+  } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  // Track the chosen list locally so we can submit both its id and name.
+  const plan = PLANS[subscription.planName] || PLANS.free;
+  const orderLimit = plan.monthlyOrderLimit;
+  const limitExceeded =
+    orderLimit !== null && subscription.ordersThisMonth >= orderLimit;
+
   const initialList =
     lists.find((l) => l.id === selectedListId) || lists[0] || null;
   const [chosenId, setChosenId] = useState(
@@ -100,7 +123,6 @@ export default function Index() {
   const chosenList = lists.find((l) => l.id === chosenId);
   const chosenName = chosenList?.name || selectedListName || "";
 
-  // What the orders are currently syncing to (after save or from saved config).
   const syncingTo = actionData?.saved
     ? actionData.listName
     : !actionData?.disconnected && selectedListId
@@ -120,6 +142,64 @@ export default function Index() {
           </div>
         </header>
 
+        {/* Billing success banner */}
+        {billingSuccess && (
+          <div style={{ ...styles.successBanner, marginBottom: "20px" }}>
+            ✓ Your plan has been updated successfully.
+          </div>
+        )}
+
+        {/* Free tier limit exceeded warning */}
+        {limitExceeded && (
+          <div style={styles.limitBanner}>
+            <strong>Monthly limit reached.</strong> You've used all 50 free
+            orders this month. New orders will not sync until you upgrade or
+            until the counter resets on the 1st.{" "}
+            <a href="/app/billing" target="_top" style={styles.limitBannerLink}>
+              Upgrade now →
+            </a>
+          </div>
+        )}
+
+        {/* Plan section */}
+        <section style={{ ...styles.card, marginBottom: "20px" }}>
+          <div style={styles.planRow}>
+            <div>
+              <div style={styles.planLabel}>Current plan</div>
+              <div style={styles.planName}>
+                {plan.name}
+                {subscription.planName !== "free" && (
+                  <span style={styles.paidBadge}>Active</span>
+                )}
+              </div>
+              {orderLimit !== null ? (
+                <div style={styles.planUsage}>
+                  <div style={styles.usageBar}>
+                    <div
+                      style={{
+                        ...styles.usageFill,
+                        width: `${Math.min(100, (subscription.ordersThisMonth / orderLimit) * 100)}%`,
+                        background: limitExceeded ? "#ff5a5a" : COLORS.accent,
+                      }}
+                    />
+                  </div>
+                  <span style={{ ...styles.usageText, color: limitExceeded ? "#ff8a8a" : COLORS.muted }}>
+                    {subscription.ordersThisMonth} / {orderLimit} orders this month
+                  </span>
+                </div>
+              ) : (
+                <div style={{ ...styles.usageText, marginTop: "6px" }}>
+                  {subscription.ordersThisMonth} orders synced this month
+                </div>
+              )}
+            </div>
+            <a href="/app/billing" target="_top" style={styles.managePlanButton}>
+              {subscription.planName === "free" ? "Upgrade" : "Manage plan"}
+            </a>
+          </div>
+        </section>
+
+        {/* ClickUp connection section */}
         {!connected ? (
           <section style={styles.card}>
             <h2 style={styles.cardTitle}>Connect your ClickUp account</h2>
@@ -157,8 +237,7 @@ export default function Index() {
 
             {syncingTo && (
               <div style={styles.successBanner}>
-                ✓ Orders are syncing to{" "}
-                <strong>{syncingTo}</strong>
+                ✓ Orders are syncing to <strong>{syncingTo}</strong>
               </div>
             )}
 
@@ -211,6 +290,10 @@ export default function Index() {
 
         <footer style={styles.footer}>
           Connected store: <span style={styles.footerShop}>{shop}</span>
+          {" · "}
+          <a href="/privacy" target="_top" style={styles.footerLink}>
+            Privacy Policy
+          </a>
         </footer>
       </div>
     </div>
@@ -359,6 +442,90 @@ const styles = {
     fontSize: "14px",
     margin: "16px 0 4px",
   },
+  limitBanner: {
+    background: "rgba(255, 165, 0, 0.1)",
+    border: "1px solid #f0a500",
+    color: "#f0c040",
+    borderRadius: "10px",
+    padding: "12px 16px",
+    fontSize: "14px",
+    marginBottom: "20px",
+    lineHeight: 1.5,
+  },
+  limitBannerLink: {
+    color: "#f0c040",
+    fontWeight: 600,
+    textDecoration: "underline",
+  },
+  planRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "16px",
+  },
+  planLabel: {
+    fontSize: "12px",
+    fontWeight: 500,
+    color: COLORS.muted,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    marginBottom: "4px",
+  },
+  planName: {
+    fontSize: "20px",
+    fontWeight: 700,
+    color: COLORS.text,
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginBottom: "10px",
+  },
+  paidBadge: {
+    fontSize: "11px",
+    fontWeight: 600,
+    background: "rgba(0, 196, 140, 0.15)",
+    color: COLORS.accent,
+    border: `1px solid ${COLORS.accent}`,
+    borderRadius: "6px",
+    padding: "2px 8px",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  },
+  planUsage: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    maxWidth: "240px",
+  },
+  usageBar: {
+    height: "4px",
+    background: COLORS.border,
+    borderRadius: "2px",
+    overflow: "hidden",
+  },
+  usageFill: {
+    height: "100%",
+    borderRadius: "2px",
+    transition: "width 0.3s ease",
+  },
+  usageText: {
+    fontSize: "12px",
+    color: COLORS.muted,
+  },
+  managePlanButton: {
+    display: "inline-block",
+    background: "transparent",
+    color: COLORS.text,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: "10px",
+    padding: "10px 18px",
+    fontSize: "13px",
+    fontWeight: 500,
+    cursor: "pointer",
+    textDecoration: "none",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
   footer: {
     marginTop: "24px",
     fontSize: "13px",
@@ -367,6 +534,10 @@ const styles = {
   },
   footerShop: {
     color: COLORS.text,
+  },
+  footerLink: {
+    color: COLORS.muted,
+    textDecoration: "underline",
   },
 };
 
