@@ -173,15 +173,14 @@ export async function getConnection(shop) {
     where: { shopDomain: shop },
   });
   if (!conn) return null;
-  // Return a plain object with the decrypted token so callers use the raw token.
-  return {
-    ...conn,
-    accessToken: decryptToken(conn.accessToken),
-  };
+  const accessToken = await decryptToken(conn.accessToken);
+  // null means old-format token that can't be decrypted — treat as disconnected
+  if (!accessToken) return null;
+  return { ...conn, accessToken };
 }
 
 export async function saveToken(shop, accessToken, workspaceName = null) {
-  const encryptedToken = encryptToken(accessToken);
+  const encryptedToken = await encryptToken(accessToken);
   const data = { accessToken: encryptedToken };
   if (workspaceName) data.workspaceName = workspaceName;
   return prisma.clickUpConnection.upsert({

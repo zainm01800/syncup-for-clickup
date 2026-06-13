@@ -1,9 +1,27 @@
-import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
+// AES-256-GCM encryption using the Web Crypto API (globalThis.crypto.subtle).
+// Available in Node.js 19+ and modern browsers — requires no node: imports,
+// which avoids Vite's commonjs--resolver flagging this as a server-only module
+// during the client build's static analysis phase.
 
-const ALGORITHM = "aes-256-gcm";
+const ALGORITHM = "AES-GCM";
 const ENC_PREFIX = "enc:";
+const IV_BYTES = 12;
 
-function getKey() {
+function hexToBytes(hex) {
+  const buf = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    buf[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+  }
+  return buf;
+}
+
+function bytesToHex(buf) {
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function getKeyBytes() {
   const hex = process.env.ENCRYPTION_KEY;
   if (!hex || hex.length !== 64) {
     throw new Error(
@@ -11,38 +29,49 @@ function getKey() {
         "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
     );
   }
-  return Buffer.from(hex, "hex");
+  return hexToBytes(hex);
 }
 
-export function encryptToken(plaintext) {
-  const key = getKey();
-  const iv = randomBytes(12);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, "utf8"),
-    cipher.final(),
-  ]);
-  const tag = cipher.getAuthTag();
-  return `${ENC_PREFIX}${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`;
+async function importKey() {
+  return globalThis.crypto.subtle.importKey(
+    "raw",
+    getKeyBytes(),
+    { name: ALGORITHM },
+    false,
+    ["encrypt", "decrypt"]
+  );
 }
 
-export function decryptToken(data) {
+// Returns "enc:{ivHex}:{combinedCiphertextAndTagHex}"
+export async function encryptToken(plaintext) {
+  const key = await importKey();
+  const iv = globalThis.crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const cipherBuf = await globalThis.crypto.subtle.encrypt(
+    { name: ALGORITHM, iv },
+    key,
+    new TextEncoder().encode(plaintext)
+  );
+  return `${ENC_PREFIX}${bytesToHex(iv)}:${bytesToHex(cipherBuf)}`;
+}
+
+export async function decryptToken(data) {
   if (!data || !data.startsWith(ENC_PREFIX)) {
-    // Legacy plaintext token — return as-is so existing connections keep working
+    // Legacy plaintext token — return as-is so existing connections keep working.
     return data;
   }
-  const key = getKey();
   const parts = data.slice(ENC_PREFIX.length).split(":");
-  if (parts.length !== 3) throw new Error("Invalid encrypted token format");
-  const [ivHex, tagHex, encHex] = parts;
-  const decipher = createDecipheriv(
-    ALGORITHM,
+  if (parts.length !== 2) {
+    // Old 3-part format from previous node:crypto implementation.
+    // Can't decrypt without node:crypto; return null to trigger reconnection.
+    return null;
+  }
+  const key = await importKey();
+  const iv = hexToBytes(parts[0]);
+  const combined = hexToBytes(parts[1]);
+  const decrypted = await globalThis.crypto.subtle.decrypt(
+    { name: ALGORITHM, iv },
     key,
-    Buffer.from(ivHex, "hex")
+    combined
   );
-  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(encHex, "hex")),
-    decipher.final(),
-  ]).toString("utf8");
+  return new TextDecoder().decode(decrypted);
 }
