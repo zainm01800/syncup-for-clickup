@@ -1,4 +1,5 @@
 import prisma from "./db.server";
+import { encryptToken, decryptToken } from "./crypto.server";
 
 // ClickUp OAuth + API endpoints (see https://clickup.com/api).
 const CLICKUP_AUTHORIZE_URL = "https://app.clickup.com/api";
@@ -9,10 +10,6 @@ const CLICKUP_API_BASE = "https://api.clickup.com/api/v2";
 // OAuth
 // ---------------------------------------------------------------------------
 
-/**
- * Build the ClickUp authorisation URL the merchant is sent to. The shop domain
- * is passed through `state` so the callback knows which shop is connecting.
- */
 export function getClickUpAuthUrl(shop) {
   const params = new URLSearchParams({
     client_id: process.env.CLICKUP_CLIENT_ID || "",
@@ -23,10 +20,6 @@ export function getClickUpAuthUrl(shop) {
   return `${CLICKUP_AUTHORIZE_URL}?${params.toString()}`;
 }
 
-/**
- * Exchange the authorisation `code` returned by ClickUp for an access token.
- * ClickUp expects the credentials as query parameters on a POST request.
- */
 export async function exchangeClickUpCode(code) {
   const params = new URLSearchParams({
     client_id: process.env.CLICKUP_CLIENT_ID || "",
@@ -42,7 +35,7 @@ export async function exchangeClickUpCode(code) {
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
-      `ClickUp token exchange failed (${response.status}): ${body}`,
+      `ClickUp token exchange failed (${response.status}): ${body}`
     );
   }
 
@@ -72,11 +65,23 @@ async function clickupRequest(path, token, options = {}) {
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
-      `ClickUp ${options.method || "GET"} ${path} failed (${response.status}): ${body}`,
+      `ClickUp ${options.method || "GET"} ${path} failed (${response.status}): ${body}`
     );
   }
 
   return response.json();
+}
+
+// Retry once after a short delay. Webhook handlers need to stay under 5s,
+// so we use a 1-second backoff rather than the full 5s called for in spec.
+export async function withRetry(fn, retries = 1, delayMs = 1000) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (retries <= 0) throw err;
+    await new Promise((r) => setTimeout(r, delayMs));
+    return withRetry(fn, retries - 1, delayMs);
+  }
 }
 
 /** GET /team — the workspaces (teams) the connected user can access. */
@@ -85,22 +90,34 @@ export async function getTeams(token) {
   return data.teams || [];
 }
 
-/** GET /team/{team_id}/space — the spaces inside a workspace. */
+/** GET /team/{team_id}/space */
 export async function getSpaces(token, teamId) {
   const data = await clickupRequest(`/team/${teamId}/space`, token);
   return data.spaces || [];
 }
 
-/** GET /space/{space_id}/list — the (folderless) lists inside a space. */
-export async function getSpaceLists(token, spaceId) {
+/** GET /space/{space_id}/folder */
+async function getFolders(token, spaceId) {
+  const data = await clickupRequest(`/space/${spaceId}/folder`, token);
+  return data.folders || [];
+}
+
+/** GET /space/{space_id}/list — folderless lists inside a space. */
+async function getSpaceLists(token, spaceId) {
   const data = await clickupRequest(`/space/${spaceId}/list`, token);
   return data.lists || [];
 }
 
+/** GET /folder/{folder_id}/list — lists inside a folder. */
+async function getFolderLists(token, folderId) {
+  const data = await clickupRequest(`/folder/${folderId}/list`, token);
+  return data.lists || [];
+}
+
 /**
- * Walk every workspace -> space -> list and return a flat array of lists the
- * merchant can sync orders into. Each entry is labelled with its space name so
- * duplicate list names remain distinguishable in the dropdown.
+ * Walk every workspace → space → folder → list (and folderless lists) and
+ * return a flat array of objects { id, name } the merchant can sync into.
+ * Each name is prefixed with its path so duplicates are distinguishable.
  */
 export async function getAllLists(token) {
   const lists = [];
@@ -109,12 +126,21 @@ export async function getAllLists(token) {
   for (const team of teams) {
     const spaces = await getSpaces(token, team.id);
     for (const space of spaces) {
-      const spaceLists = await getSpaceLists(token, space.id);
-      for (const list of spaceLists) {
-        lists.push({
-          id: list.id,
-          name: `${space.name} / ${list.name}`,
-        });
+      // Folderless lists
+      const spaceListItems = await getSpaceLists(token, space.id);
+      for (const list of spaceListItems) {
+        lists.push({ id: list.id, name: `${space.name} / ${list.name}` });
+      }
+      // Lists inside folders
+      const folders = await getFolders(token, space.id);
+      for (const folder of folders) {
+        const folderLists = await getFolderLists(token, folder.id);
+        for (const list of folderLists) {
+          lists.push({
+            id: list.id,
+            name: `${space.name} / ${folder.name} / ${list.name}`,
+          });
+        }
       }
     }
   }
@@ -139,18 +165,29 @@ export async function completeTask(token, taskId) {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence helpers (ClickUpConnection + OrderTask)
+// Persistence helpers — ClickUpConnection
 // ---------------------------------------------------------------------------
 
 export async function getConnection(shop) {
-  return prisma.clickUpConnection.findUnique({ where: { shopDomain: shop } });
+  const conn = await prisma.clickUpConnection.findUnique({
+    where: { shopDomain: shop },
+  });
+  if (!conn) return null;
+  // Return a plain object with the decrypted token so callers use the raw token.
+  return {
+    ...conn,
+    accessToken: decryptToken(conn.accessToken),
+  };
 }
 
-export async function saveToken(shop, accessToken) {
+export async function saveToken(shop, accessToken, workspaceName = null) {
+  const encryptedToken = encryptToken(accessToken);
+  const data = { accessToken: encryptedToken };
+  if (workspaceName) data.workspaceName = workspaceName;
   return prisma.clickUpConnection.upsert({
     where: { shopDomain: shop },
-    update: { accessToken },
-    create: { shopDomain: shop, accessToken },
+    update: data,
+    create: { shopDomain: shop, ...data },
   });
 }
 
@@ -165,13 +202,17 @@ export async function disconnect(shop) {
   return prisma.clickUpConnection.deleteMany({ where: { shopDomain: shop } });
 }
 
-export async function recordOrderTask(shop, shopifyOrderId, clickupTaskId) {
+// ---------------------------------------------------------------------------
+// Persistence helpers — OrderTask
+// ---------------------------------------------------------------------------
+
+export async function recordOrderTask(shop, shopifyOrderId, clickupTaskId, status = "synced") {
   return prisma.orderTask.upsert({
     where: {
       shopDomain_shopifyOrderId: { shopDomain: shop, shopifyOrderId },
     },
-    update: { clickupTaskId },
-    create: { shopDomain: shop, shopifyOrderId, clickupTaskId },
+    update: { clickupTaskId, status },
+    create: { shopDomain: shop, shopifyOrderId, clickupTaskId, status },
   });
 }
 
@@ -180,5 +221,30 @@ export async function findOrderTask(shop, shopifyOrderId) {
     where: {
       shopDomain_shopifyOrderId: { shopDomain: shop, shopifyOrderId },
     },
+  });
+}
+
+export async function updateOrderTaskStatus(shop, shopifyOrderId, status) {
+  return prisma.orderTask.updateMany({
+    where: { shopDomain: shop, shopifyOrderId },
+    data: { status },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Activity log — fire-and-forget, never blocks callers
+// ---------------------------------------------------------------------------
+
+export function logActivity(shop, eventType, description) {
+  prisma.activityLog
+    .create({ data: { shopDomain: shop, eventType, description } })
+    .catch((e) => console.error("logActivity failed:", e));
+}
+
+export async function getRecentActivity(shop, limit = 5) {
+  return prisma.activityLog.findMany({
+    where: { shopDomain: shop },
+    orderBy: { createdAt: "desc" },
+    take: limit,
   });
 }

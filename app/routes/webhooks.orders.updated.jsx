@@ -3,6 +3,9 @@ import {
   getConnection,
   findOrderTask,
   completeTask,
+  updateOrderTaskStatus,
+  withRetry,
+  logActivity,
 } from "../clickup.server";
 
 export const action = async ({ request }) => {
@@ -12,7 +15,9 @@ export const action = async ({ request }) => {
   const order = payload;
 
   if (order.fulfillment_status !== "fulfilled") {
-    console.log(`Order ${order.id} is not fulfilled (status: ${order.fulfillment_status}); skipping`);
+    console.log(
+      `Order ${order.id} not fulfilled (status: ${order.fulfillment_status}); skipping`
+    );
     return new Response();
   }
 
@@ -23,16 +28,33 @@ export const action = async ({ request }) => {
   }
 
   const record = await findOrderTask(shop, String(order.id));
-  if (!record) {
+  if (!record || record.clickupTaskId === "failed") {
     console.log(`No ClickUp task recorded for order ${order.id}; skipping`);
     return new Response();
   }
 
+  const orderNumber = order.order_number ?? order.number ?? order.id;
+
   try {
-    await completeTask(connection.accessToken, record.clickupTaskId);
-    console.log(`Marked ClickUp task ${record.clickupTaskId} complete for order ${order.id}`);
+    await withRetry(
+      () => completeTask(connection.accessToken, record.clickupTaskId),
+      1,
+      1000
+    );
+    await updateOrderTaskStatus(shop, String(order.id), "fulfilled");
+    logActivity(
+      shop,
+      "order_fulfilled",
+      `Order #${orderNumber} marked complete in ClickUp`
+    );
+    console.log(
+      `Marked ClickUp task ${record.clickupTaskId} complete for order ${order.id}`
+    );
   } catch (error) {
-    console.error(`Failed to complete ClickUp task ${record.clickupTaskId} for order ${order.id}:`, error);
+    console.error(
+      `Failed to complete ClickUp task ${record.clickupTaskId} for order ${order.id}:`,
+      error
+    );
   }
 
   return new Response();

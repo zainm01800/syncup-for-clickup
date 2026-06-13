@@ -1,5 +1,10 @@
 import { redirect } from "react-router";
-import { exchangeClickUpCode, saveToken } from "../clickup.server";
+import {
+  exchangeClickUpCode,
+  saveToken,
+  getTeams,
+  logActivity,
+} from "../clickup.server";
 
 export const loader = async ({ request }) => {
   const url = new URL(request.url);
@@ -7,17 +12,20 @@ export const loader = async ({ request }) => {
   const shop = url.searchParams.get("state");
   const error = url.searchParams.get("error");
 
+  const storeHandle = shop ? shop.replace(/\.myshopify\.com$/, "") : null;
+  const appUrl = storeHandle
+    ? `https://admin.shopify.com/store/${storeHandle}/apps/${process.env.SHOPIFY_API_KEY}`
+    : "/";
+
   if (error) {
-    throw new Response(
-      `ClickUp authorisation denied: ${url.searchParams.get("error_description") || error}`,
-      { status: 400 },
+    const msg = encodeURIComponent(
+      `ClickUp authorisation was denied: ${url.searchParams.get("error_description") || error}`
     );
+    return redirect(`${appUrl}?clickup_error=${msg}`);
   }
 
   if (!code || !shop) {
-    throw new Response("Missing ClickUp authorisation code or state", {
-      status: 400,
-    });
+    return redirect(`${appUrl}?clickup_error=${encodeURIComponent("Missing authorisation code — please try connecting again.")}`);
   }
 
   let accessToken;
@@ -25,17 +33,23 @@ export const loader = async ({ request }) => {
     accessToken = await exchangeClickUpCode(code);
   } catch (err) {
     console.error("ClickUp token exchange error:", err);
-    throw new Response(
-      `Failed to connect ClickUp: ${err.message}`,
-      { status: 502 },
+    const msg = encodeURIComponent(
+      "Failed to connect ClickUp. Please try again."
     );
+    return redirect(`${appUrl}?clickup_error=${msg}`);
   }
 
-  await saveToken(shop, accessToken);
+  // Fetch workspace name — non-fatal if it errors
+  let workspaceName = null;
+  try {
+    const teams = await getTeams(accessToken);
+    workspaceName = teams[0]?.name || null;
+  } catch (e) {
+    console.error("Could not fetch ClickUp workspace name:", e);
+  }
 
-  const storeHandle = shop.replace(/\.myshopify\.com$/, "");
-  return redirect(
-    // eslint-disable-next-line no-undef
-    `https://admin.shopify.com/store/${storeHandle}/apps/${process.env.SHOPIFY_API_KEY}`,
-  );
+  await saveToken(shop, accessToken, workspaceName);
+  logActivity(shop, "clickup_connected", `Connected to ClickUp${workspaceName ? ` (${workspaceName})` : ""}`);
+
+  return redirect(appUrl);
 };
