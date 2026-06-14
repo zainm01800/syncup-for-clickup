@@ -3,6 +3,7 @@ import {
   getConnection,
   createTask,
   recordOrderTask,
+  findOrderTask,
   withRetry,
   logActivity,
 } from "../clickup.server";
@@ -76,6 +77,13 @@ export const action = async ({ request }) => {
   }
 
   const order = payload;
+
+  const existing = await findOrderTask(shop, String(order.id));
+  if (existing) {
+    console.log(`Order ${order.id} already synced; skipping duplicate webhook`);
+    return new Response();
+  }
+
   const orderNumber = order.order_number ?? order.number ?? order.id;
   const customerName =
     [order.customer?.first_name, order.customer?.last_name]
