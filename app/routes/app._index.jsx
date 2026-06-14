@@ -690,84 +690,109 @@ export default function Index() {
                 </section>
               )}
 
-              {/* SECTION 4 — SYNC ANALYTICS (locked for Starter, active for Growth) */}
-              <section style={{ ...styles.card, marginTop: 16, position: "relative", overflow: "hidden" }}>
-                <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Sync Analytics</h2>
+              {/* SECTION 4 — SYNC ANALYTICS (locked for Starter, active for Growth, active during trial) */}
+              {(() => {
+                const isTrial = subscription.planName === "trial";
+                const isGrowth = subscription.planName.startsWith("growth");
+                const isAnalyticsUnlocked = isGrowth || isTrial;
 
-                <div style={subscription.planName.startsWith("growth") ? {} : { filter: "blur(4px)", pointerEvents: "none", opacity: 0.6 }}>
-                  <div style={styles.analyticsGrid}>
-                    <div style={styles.analyticsStatCard}>
-                      <div style={styles.analyticsStatLabel}>Synced this month</div>
-                      <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
-                    </div>
-                    <div style={styles.analyticsStatCard}>
-                      <div style={styles.analyticsStatLabel}>Synced all time</div>
-                      <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
-                    </div>
-                    <div style={styles.analyticsStatCard}>
-                      <div style={styles.analyticsStatLabel}>Success Rate</div>
-                      <div style={styles.analyticsStatValue}>{analytics.successRate}%</div>
-                    </div>
-                  </div>
+                return (
+                  <section style={{ ...styles.card, marginTop: 16, position: "relative", overflow: "hidden" }}>
+                    <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      Sync Analytics
+                      {isTrial && (
+                        <span style={{
+                          fontSize: 11,
+                          color: C.accent,
+                          background: "rgba(0,196,140,0.12)",
+                          border: `1px solid ${C.accent}44`,
+                          padding: "2px 8px",
+                          borderRadius: 12,
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em"
+                        }}>
+                          Growth Plan Feature (Free during trial)
+                        </span>
+                      )}
+                    </h2>
 
-                  <h3 style={styles.sectionSubheading}>Recent Sync Events</h3>
-                  {analytics.recentTasks.length === 0 ? (
-                    <p style={styles.cardText}>No sync events recorded yet.</p>
-                  ) : (
-                    <table style={styles.table}>
-                      <thead>
-                        <tr>
-                          <th style={styles.th}>Time</th>
-                          <th style={styles.th}>Order</th>
-                          <th style={styles.th}>Event</th>
-                          <th style={styles.th}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {analytics.recentTasks.map((t) => (
-                          <tr key={t.id} style={styles.tr}>
-                            <td style={styles.td}>{timeAgo(t.createdAt)}</td>
-                            <td style={styles.td}>{t.orderNumber}</td>
-                            <td style={styles.td}>
-                              {t.status === "fulfilled"
-                                ? "Fulfillment Synced"
-                                : t.status === "failed"
-                                ? "Sync Failed"
-                                : t.status === "retrying"
-                                ? "Sync Retried (Queued)"
-                                : "Order Synced"}
-                            </td>
-                            <td style={styles.td}>
-                              <span
-                                style={{
-                                  ...styles.statusBadgeInline,
-                                  color: t.status === "failed" ? "#ff4444" : t.status === "retrying" ? "#ff9900" : "#00c48c",
-                                  background: t.status === "failed" ? "rgba(255,68,68,0.12)" : t.status === "retrying" ? "rgba(255,153,0,0.12)" : "rgba(0,196,140,0.12)",
-                                }}
-                              >
-                                {t.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
+                    <div style={isAnalyticsUnlocked ? {} : { filter: "blur(4px)", pointerEvents: "none", opacity: 0.6 }}>
+                      <div style={styles.analyticsGrid}>
+                        <div style={styles.analyticsStatCard}>
+                          <div style={styles.analyticsStatLabel}>Synced this month</div>
+                          <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
+                        </div>
+                        <div style={styles.analyticsStatCard}>
+                          <div style={styles.analyticsStatLabel}>Synced all time</div>
+                          <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
+                        </div>
+                        <div style={styles.analyticsStatCard}>
+                          <div style={styles.analyticsStatLabel}>Success Rate</div>
+                          <div style={styles.analyticsStatValue}>{analytics.successRate}%</div>
+                        </div>
+                      </div>
 
-                {!subscription.planName.startsWith("growth") && (
-                  <div style={styles.analyticsLockOverlay}>
-                    <div style={styles.lockIcon}>🔒</div>
-                    <div style={styles.lockTitle}>Growth Plan Feature</div>
-                    <div style={styles.lockText}>
-                      Upgrade to the Growth plan to unlock sync analytics, up to 5 list connections, priority support, and automatic webhook retries.
+                      <h3 style={styles.sectionSubheading}>Recent Sync Events</h3>
+                      {analytics.recentTasks.length === 0 ? (
+                        <p style={styles.cardText}>No sync events recorded yet.</p>
+                      ) : (
+                        <table style={styles.table}>
+                          <thead>
+                            <tr>
+                              <th style={styles.th}>Time</th>
+                              <th style={styles.th}>Order</th>
+                              <th style={styles.th}>Event</th>
+                              <th style={styles.th}>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analytics.recentTasks.map((t) => (
+                              <tr key={t.id} style={styles.tr}>
+                                <td style={styles.td}>{timeAgo(t.createdAt)}</td>
+                                <td style={styles.td}>{t.orderNumber}</td>
+                                <td style={styles.td}>
+                                  {t.status === "fulfilled"
+                                    ? "Fulfillment Synced"
+                                    : t.status === "failed"
+                                    ? "Sync Failed"
+                                    : t.status === "retrying"
+                                    ? "Sync Retried (Queued)"
+                                    : "Order Synced"}
+                                </td>
+                                <td style={styles.td}>
+                                  <span
+                                    style={{
+                                      ...styles.statusBadgeInline,
+                                      color: t.status === "failed" ? "#ff4444" : t.status === "retrying" ? "#ff9900" : "#00c48c",
+                                      background: t.status === "failed" ? "rgba(255,68,68,0.12)" : t.status === "retrying" ? "rgba(255,153,0,0.12)" : "rgba(0,196,140,0.12)",
+                                    }}
+                                  >
+                                    {t.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
-                    <Link to="/app/billing" style={styles.upgradeInlineButton}>
-                      Upgrade to Growth
-                    </Link>
-                  </div>
-                )}
-              </section>
+
+                    {!isAnalyticsUnlocked && (
+                      <div style={styles.analyticsLockOverlay}>
+                        <div style={styles.lockIcon}>🔒</div>
+                        <div style={styles.lockTitle}>Growth Plan Feature</div>
+                        <div style={styles.lockText}>
+                          Upgrade to the Growth plan to unlock sync analytics, up to 5 list connections, priority support, and automatic webhook retries.
+                        </div>
+                        <Link to="/app/billing" style={styles.upgradeInlineButton}>
+                          Upgrade to Growth
+                        </Link>
+                      </div>
+                    )}
+                  </section>
+                );
+              })()}
 
               {/* Recent Activity Log */}
               {recentActivity.length > 0 && (
