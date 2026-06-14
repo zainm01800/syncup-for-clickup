@@ -206,7 +206,22 @@ export default function Index() {
         <div style={styles.container} className="su-container">
           {/* Header */}
           <header style={styles.header}>
-            <div style={styles.logoDot} />
+            <div style={styles.logoMark}>
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={C.accent}
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
+                <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
+              </svg>
+            </div>
             <div style={{ flex: 1 }}>
               <h1 style={styles.title}>SyncUp</h1>
               <p style={styles.subtitle}>
@@ -457,11 +472,15 @@ const styles = {
     marginBottom: 24,
     flexWrap: "wrap",
   },
-  logoDot: {
+  logoMark: {
     width: 44,
     height: 44,
     borderRadius: 12,
-    background: C.accent,
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
     flexShrink: 0,
   },
   title: { margin: 0, fontSize: 24, fontWeight: 600, color: C.text },
