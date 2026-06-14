@@ -33,12 +33,14 @@ const CLICKUP_API_BASE = "https://api.clickup.com/api/v2";
 // OAuth
 // ---------------------------------------------------------------------------
 
-export function getClickUpAuthUrl(shop) {
+export function getClickUpAuthUrl(state) {
   const params = new URLSearchParams({
     client_id: process.env.CLICKUP_CLIENT_ID || "",
     // ClickUp strips paths from redirect URIs — must use bare origin.
     redirect_uri: process.env.SHOPIFY_APP_URL || "",
-    state: shop,
+    // `state` is an HMAC-signed token (see oauth-state.server.js) that binds
+    // this flow to one authenticated shop — never the raw shop domain.
+    state,
   });
   return `${CLICKUP_AUTHORIZE_URL}?${params.toString()}`;
 }

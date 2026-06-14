@@ -5,17 +5,28 @@ import {
   getTeams,
   logActivity,
 } from "../clickup.server";
+import { verifyState } from "../oauth-state.server";
 
 export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
-  const shop = url.searchParams.get("state");
   const error = url.searchParams.get("error");
 
-  const storeHandle = shop ? shop.replace(/\.myshopify\.com$/, "") : null;
-  const appUrl = storeHandle
-    ? `https://admin.shopify.com/store/${storeHandle}/apps/${process.env.SHOPIFY_API_KEY}`
-    : "/";
+  // The shop is derived ONLY by verifying the signed `state` token — never from
+  // a raw caller-supplied value. A forged callback therefore can't attach a
+  // ClickUp account to a store it doesn't control.
+  const shop = await verifyState(url.searchParams.get("state"));
+
+  if (!shop) {
+    // Missing / tampered / expired state — refuse to save anything.
+    const msg = encodeURIComponent(
+      "Your ClickUp connection link expired or was invalid. Please try connecting again."
+    );
+    return redirect(`/?clickup_error=${msg}`);
+  }
+
+  const storeHandle = shop.replace(/\.myshopify\.com$/, "");
+  const appUrl = `https://admin.shopify.com/store/${storeHandle}/apps/${process.env.SHOPIFY_API_KEY}`;
 
   if (error) {
     const msg = encodeURIComponent(
@@ -24,8 +35,10 @@ export const loader = async ({ request }) => {
     return redirect(`${appUrl}?clickup_error=${msg}`);
   }
 
-  if (!code || !shop) {
-    return redirect(`${appUrl}?clickup_error=${encodeURIComponent("Missing authorisation code — please try connecting again.")}`);
+  if (!code) {
+    return redirect(
+      `${appUrl}?clickup_error=${encodeURIComponent("Missing authorisation code — please try connecting again.")}`
+    );
   }
 
   let accessToken;

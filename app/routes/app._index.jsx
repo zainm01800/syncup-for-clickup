@@ -11,6 +11,7 @@ import {
   logActivity,
 } from "../clickup.server";
 import { getOrCreateSubscription } from "../billing.server";
+import { signState } from "../oauth-state.server";
 import { PLANS } from "../plans";
 
 export const loader = async ({ request }) => {
@@ -58,6 +59,7 @@ export const loader = async ({ request }) => {
 
   return {
     shop,
+    clickupConnectState: await signState(shop),
     connected: Boolean(connection?.accessToken),
     workspaceName: connection?.workspaceName || null,
     selectedListId: connection?.listId || "",
@@ -147,6 +149,7 @@ const SYNC_STATUS_CONFIG = {
 export default function Index() {
   const {
     shop,
+    clickupConnectState,
     connected,
     workspaceName,
     selectedListId,
@@ -331,7 +334,7 @@ export default function Index() {
                 complete — automatically.
               </p>
               <a
-                href={`/auth/clickup?shop=${encodeURIComponent(shop)}`}
+                href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
                 target="_top"
                 style={styles.primaryButton}
               >
