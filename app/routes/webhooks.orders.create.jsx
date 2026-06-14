@@ -120,6 +120,10 @@ export const action = async ({ request }) => {
     [order.customer?.first_name, order.customer?.last_name]
       .filter(Boolean).join(" ").trim() ||
     order.customer?.name ||
+    [order.billing_address?.first_name, order.billing_address?.last_name]
+      .filter(Boolean).join(" ").trim() ||
+    [order.shipping_address?.first_name, order.shipping_address?.last_name]
+      .filter(Boolean).join(" ").trim() ||
     order.billing_address?.name ||
     order.shipping_address?.name ||
     order.customer?.email ||
