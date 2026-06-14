@@ -23,27 +23,30 @@ export default function PrivacyPolicy() {
           <h3 style={styles.h3}>Overview</h3>
           <p style={styles.p}>
             SyncUp (&ldquo;the App&rdquo;) is a Shopify application that
-            automatically creates ClickUp tasks when orders are placed in your
-            Shopify store, and marks those tasks complete when orders are
-            fulfilled. This Privacy Policy explains what data we collect, how we
-            use it, and how you can request its deletion.
+            automatically creates tasks in your connected project management tools
+            (such as ClickUp) when orders are placed in your Shopify store, and
+            marks those tasks complete when orders are fulfilled. This Privacy
+            Policy explains what data we collect, how we use it, and how you can
+            request its deletion.
           </p>
 
           <h3 style={styles.h3}>Data We Collect</h3>
           <p style={styles.p}>
             <strong>Shop data:</strong> We store your Shopify shop domain and
-            authentication tokens required to integrate with Shopify and ClickUp.
+            authentication tokens required to integrate with Shopify and your
+            connected project management tools.
           </p>
           <p style={styles.p}>
             <strong>Order data:</strong> When an order is placed, we store the
-            Shopify order ID and the corresponding ClickUp task ID so we can mark
-            the task complete on fulfillment. We do not store customer names,
-            email addresses, payment details, or any other personally identifiable
-            information on our servers.
+            Shopify order ID and the corresponding task ID in your project tool
+            so we can mark the task complete on fulfillment. We do not store
+            customer names, email addresses, payment details, or any other
+            personally identifiable information on our servers.
           </p>
           <p style={styles.p}>
-            <strong>ClickUp credentials:</strong> We store your ClickUp OAuth
-            access token and the ClickUp list ID you choose to sync orders into.
+            <strong>Project tool credentials:</strong> We store your connected
+            project management tool's credentials (such as OAuth access tokens)
+            and the target folder/list/board ID you choose to sync orders into.
             This data is stored securely and used solely to create and update
             tasks on your behalf.
           </p>
@@ -57,9 +60,9 @@ export default function PrivacyPolicy() {
           <h3 style={styles.h3}>How We Use Your Data</h3>
           <p style={styles.p}>
             We use the data described above exclusively to operate the App —
-            creating ClickUp tasks for orders, marking tasks complete on
-            fulfillment, and enforcing plan limits. We do not sell, rent, or share
-            your data with third parties for marketing purposes.
+            creating tasks in your connected project tools, marking tasks
+            complete on fulfillment, and enforcing plan limits. We do not sell,
+            rent, or share your data with third parties for marketing purposes.
           </p>
 
           <h3 style={styles.h3}>Data Retention and Deletion</h3>
@@ -80,11 +83,12 @@ export default function PrivacyPolicy() {
           <ul style={styles.ul}>
             <li style={styles.li}>
               <strong>Shopify</strong> — to receive order webhooks and process
-              billing. Their privacy policy governs their data handling.
+               billing. Their privacy policy governs their data handling.
             </li>
             <li style={styles.li}>
-              <strong>ClickUp</strong> — to create and manage tasks. Their privacy
-              policy governs their data handling.
+              <strong>Project Management Tools (e.g. ClickUp)</strong> — to
+              create and manage tasks. Their privacy policies govern their data
+              handling.
             </li>
             <li style={styles.li}>
               <strong>Neon (PostgreSQL)</strong> — our database provider, hosted
@@ -95,6 +99,7 @@ export default function PrivacyPolicy() {
               be retained for up to 30 days for debugging purposes.
             </li>
           </ul>
+
 
           <h3 style={styles.h3}>GDPR &amp; CCPA</h3>
           <p style={styles.p}>

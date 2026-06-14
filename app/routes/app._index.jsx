@@ -327,11 +327,11 @@ export default function Index() {
           {/* ClickUp connection card */}
           {!connected ? (
             <section style={styles.card}>
-              <h2 style={styles.cardTitle}>Connect your ClickUp account</h2>
+              <h2 style={styles.cardTitle}>Connect a project management tool</h2>
               <p style={styles.cardText}>
                 Connect ClickUp to start syncing new orders into a list of your
                 choice. New orders become tasks, fulfilled orders get marked
-                complete — automatically.
+                complete — automatically. Notion and Monday integrations are coming soon!
               </p>
               <a
                 href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}

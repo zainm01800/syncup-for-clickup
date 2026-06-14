@@ -6,7 +6,7 @@ export const PLANS = {
     monthlyOrderLimit: 50,
     features: [
       "Up to 50 orders/month",
-      "Automatic ClickUp task creation",
+      "Automatic task creation",
       "Single list connection",
       "Order fulfillment sync",
     ],
@@ -19,7 +19,7 @@ export const PLANS = {
     shopifyPlanName: "SyncUp Starter",
     features: [
       "Unlimited orders/month",
-      "Automatic ClickUp task creation",
+      "Automatic task creation",
       "Single list connection",
       "Order fulfillment sync",
       "Email support",
@@ -33,7 +33,7 @@ export const PLANS = {
     shopifyPlanName: "SyncUp Growth",
     features: [
       "Unlimited orders/month",
-      "Automatic ClickUp task creation",
+      "Automatic task creation",
       "Multiple list connections",
       "Order fulfillment sync",
       "Priority support",
