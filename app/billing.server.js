@@ -1,5 +1,6 @@
 import prisma from "./db.server";
-export { PLANS } from "./plans";
+import { PLANS } from "./plans";
+export { PLANS };
 
 function isNewMonth(date) {
   const now = new Date();
