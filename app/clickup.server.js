@@ -258,7 +258,8 @@ export async function claimOrderSlot(shop, shopifyOrderId) {
     });
     return true;
   } catch (e) {
-    if (e.code === "P2002") return false;
+    // P2002 = Prisma unique constraint; 23505 = PostgreSQL native code (Neon adapter)
+    if (e.code === "P2002" || e.code === "23505") return false;
     throw e;
   }
 }
