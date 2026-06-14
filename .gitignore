@@ -35,5 +35,6 @@ database.sqlite
 .react-router/
 .vercel
 
-# Generated app-icon raster (regenerate from public/app-icon.svg via scripts/render-icon.mjs)
+# Generated listing rasters (regenerate from the public/*.svg sources via scripts/render-png.mjs)
 /app-icon-1200.png
+/screenshot-*.png
