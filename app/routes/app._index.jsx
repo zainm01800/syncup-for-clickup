@@ -266,6 +266,7 @@ export default function Index() {
 
   const getPlanDisplayName = (planName) => {
     if (planName === "trial") return "Free Trial";
+    if (planName === "free") return "Free Plan";
     if (planName === "starter_monthly") return "Starter Monthly";
     if (planName === "starter_annual") return "Starter Annual";
     if (planName === "growth_monthly") return "Growth Monthly";

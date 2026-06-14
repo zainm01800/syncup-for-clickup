@@ -53,11 +53,24 @@ export async function getOrCreateSubscription(shop) {
   if (sub.planName === "trial" && sub.status === "active") {
     const now = new Date();
     if (now > sub.trialEndDate) {
+      try {
+        const { handleDowngradeToListLimit } = await import("./clickup.server");
+        await handleDowngradeToListLimit(shop, 1);
+      } catch (e) {
+        console.error("Failed to trim lists on trial end:", e);
+      }
+
       sub = await prisma.subscription.update({
         where: { shopDomain: shop },
-        data: { planName: "expired", status: "expired", isTrialActive: false },
+        data: {
+          planName: "free",
+          status: "active",
+          isTrialActive: false,
+          billingCycleStart: now,
+          ordersSyncedThisMonth: 0,
+        },
       });
-      await logActivity(shop, "trial_expired", "Free trial expired; order syncing paused");
+      await logActivity(shop, "trial_expired", "Free trial expired; transitioned to Free Plan (5 orders/mo limit)");
     }
   }
 
@@ -102,6 +115,22 @@ export function isSubscriptionActive(subscription) {
 
 export function getTrialBannerStatus(subscription) {
   if (!subscription) return null;
+
+  if (subscription.planName === "free") {
+    const plan = PLANS.free;
+    if (subscription.ordersSyncedThisMonth >= plan.monthlyOrderLimit) {
+      return {
+        expired: true,
+        color: "red",
+        message: `Monthly order limit reached (${subscription.ordersSyncedThisMonth}/${plan.monthlyOrderLimit} orders synced). Upgrade to keep syncing.`,
+      };
+    }
+    return {
+      expired: false,
+      color: "green",
+      message: `Free Plan active — ${subscription.ordersSyncedThisMonth}/${plan.monthlyOrderLimit} orders synced this month.`,
+    };
+  }
 
   // Check paid plan monthly order limits
   if (subscription.planName !== "trial" && subscription.planName !== "expired" && subscription.planName !== "cancelled") {
@@ -296,14 +325,22 @@ export async function activateSubscription(shop, planKey, chargeId) {
 }
 
 export async function downgradeToFree(shop) {
-  // Acts as a clean fallback to pause/expired status
+  try {
+    const { handleDowngradeToListLimit } = await import("./clickup.server");
+    await handleDowngradeToListLimit(shop, 1);
+  } catch (e) {
+    console.error("Failed to trim lists on downgrade to free:", e);
+  }
+
   return prisma.subscription.update({
     where: { shopDomain: shop },
     data: {
-      planName: "expired",
+      planName: "free",
       shopifyChargeId: null,
       shopifyChargeStatus: null,
-      status: "expired",
+      status: "active",
+      billingCycleStart: new Date(),
+      ordersSyncedThisMonth: 0,
     },
   });
 }

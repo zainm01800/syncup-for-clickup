@@ -75,15 +75,9 @@ export const action = async ({ request }) => {
   } else if (shopifyStatus === "CANCELLED" || shopifyStatus === "EXPIRED" || shopifyStatus === "DECLINED") {
     // Only pause/cancel if the charge matches the active subscription charge ID to prevent racing webhooks
     if (sub && sub.shopifyChargeId === chargeId) {
-      await prisma.subscription.update({
-        where: { shopDomain: shop },
-        data: {
-          planName: "cancelled",
-          shopifyChargeStatus: "cancelled",
-          status: "cancelled",
-        },
-      });
-      logActivity(shop, "plan_cancelled", `Subscription cancelled (Status: ${shopifyStatus}); order syncing paused`);
+      const { downgradeToFree } = await import("../billing.server");
+      await downgradeToFree(shop);
+      logActivity(shop, "plan_cancelled", `Subscription cancelled (Status: ${shopifyStatus}); transitioned to Free Plan`);
     }
   }
 

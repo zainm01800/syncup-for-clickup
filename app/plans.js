@@ -1,4 +1,21 @@
 export const PLANS = {
+  free: {
+    key: "free",
+    name: "Free Plan",
+    price: 0,
+    interval: "EVERY_30_DAYS",
+    shopifyPlanName: "SyncUp Free Plan",
+    annual: false,
+    listLimit: 1,
+    monthlyOrderLimit: 5,
+    features: [
+      "Up to 5 orders synced/month",
+      "1 ClickUp list connection",
+      "Email support",
+      "Full order to task sync",
+      "Fulfillment completion sync",
+    ],
+  },
   starter_monthly: {
     key: "starter_monthly",
     name: "Starter Monthly",
