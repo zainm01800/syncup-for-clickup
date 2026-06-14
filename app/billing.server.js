@@ -16,8 +16,10 @@ export async function getOrCreateSubscription(shop) {
   });
 
   if (!sub) {
-    sub = await prisma.subscription.create({
-      data: { shopDomain: shop, billingCycleStart: new Date() },
+    sub = await prisma.subscription.upsert({
+      where: { shopDomain: shop },
+      update: {},
+      create: { shopDomain: shop, billingCycleStart: new Date() },
     });
     return sub;
   }

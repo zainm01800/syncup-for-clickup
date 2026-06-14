@@ -106,6 +106,7 @@ export const action = async ({ request }) => {
   }
 
   const order = payload;
+  console.log(`[DEBUG customer] id=${order.customer?.id} first=${order.customer?.first_name} last=${order.customer?.last_name} name=${order.customer?.name} email=${order.customer?.email || order.email} billing_name=${order.billing_address?.name} shipping_name=${order.shipping_address?.name}`);
 
   const claimed = await claimOrderSlot(shop, String(order.id));
   if (!claimed) {
