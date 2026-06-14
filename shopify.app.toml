@@ -27,6 +27,19 @@ api_version = "2026-07"
   uri = "/webhooks/orders/updated"
   topics = [ "orders/updated" ]
 
+  # Mandatory GDPR compliance webhooks (required for App Store listing).
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
+
 [auth]
 redirect_urls = [ "https://syncup-for-clickup.vercel.app/auth/callback" ]
 
