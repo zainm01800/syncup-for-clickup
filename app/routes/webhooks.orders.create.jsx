@@ -108,6 +108,21 @@ export const action = async ({ request }) => {
 
   const order = payload;
 
+  // Temporary debug: log customer fields from webhook payload
+  console.log(`[DEBUG] order.customer:`, JSON.stringify({
+    id: order.customer?.id,
+    first_name: order.customer?.first_name,
+    last_name: order.customer?.last_name,
+    email: order.customer?.email,
+    name: order.customer?.name,
+  }));
+  console.log(`[DEBUG] billing_address:`, JSON.stringify({
+    first_name: order.billing_address?.first_name,
+    last_name: order.billing_address?.last_name,
+    name: order.billing_address?.name,
+  }));
+  console.log(`[DEBUG] order.email:`, order.email);
+
   const claimed = await claimOrderSlot(shop, String(order.id));
   if (!claimed) {
     console.log(`Order ${order.id} already claimed by another webhook; skipping`);
