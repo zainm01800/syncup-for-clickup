@@ -226,8 +226,8 @@ export default function BillingPage() {
         </div>
 
         <p style={styles.note}>
-          Billing is handled securely by Shopify. Test mode is active — no real
-          charges will be made.
+          Billing is handled securely by Shopify. Upgrade, downgrade, or cancel
+          anytime.
         </p>
       </div>
     </div>
