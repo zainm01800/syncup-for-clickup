@@ -17,6 +17,7 @@ export async function fetchShopifyCustomer(shop, customerId) {
     console.log(`[DEBUG fetchCustomer] status=${res.status}`);
     if (!res.ok) return null;
     const { customer } = await res.json();
+    console.log(`[DEBUG fetchCustomer] customer=${JSON.stringify({ first_name: customer?.first_name, last_name: customer?.last_name, email: customer?.email, default_address: customer?.default_address?.name, keys: customer ? Object.keys(customer) : null })}`);
     return customer ?? null;
   } catch (err) {
     console.log(`[DEBUG fetchCustomer] error=${err.message}`);
