@@ -10,24 +10,38 @@ import {
 import { getOrCreateSubscription, isWithinLimit, incrementOrderCount } from "../billing.server";
 
 export const action = async ({ request }) => {
-  function buildTaskDescription(order, adminOrderUrl) {
+  function buildTaskDescription(order, adminOrderUrl, customerName) {
     const lines = [];
 
-    lines.push("📦 Line items:");
+    // Customer
+    lines.push("👤 Customer:");
+    lines.push(`   Name:  ${customerName}`);
+    const email = order.customer?.email || order.email;
+    if (email) lines.push(`   Email: ${email}`);
+    const phone =
+      order.customer?.phone ||
+      order.billing_address?.phone ||
+      order.shipping_address?.phone;
+    if (phone) lines.push(`   Phone: ${phone}`);
+    lines.push("");
+
+    // Line items
+    lines.push("📦 Items:");
     if (order.line_items?.length > 0) {
       for (const item of order.line_items) {
         const variant = item.variant_title ? ` (${item.variant_title})` : "";
-        lines.push(`  • ${item.quantity}x ${item.title}${variant}`);
+        const sku = item.sku ? ` [${item.sku}]` : "";
+        lines.push(`  • ${item.quantity}x ${item.title}${variant}${sku}`);
       }
     } else {
       lines.push("  (no items)");
     }
-
     lines.push("");
 
+    // Pricing + payment
     const currency = order.currency || "";
     const subtotal = order.subtotal_price ?? "0.00";
-    const shipping =
+    const shippingCost =
       order.shipping_lines?.reduce(
         (sum, s) => sum + parseFloat(s.price || "0"),
         0
@@ -35,12 +49,21 @@ export const action = async ({ request }) => {
     const total = order.total_price ?? "0.00";
 
     lines.push(`💰 Subtotal: ${currency} ${subtotal}`);
-    lines.push(`🚚 Shipping: ${currency} ${shipping}`);
+    lines.push(`🚚 Shipping: ${currency} ${shippingCost}`);
     lines.push(`   Total:    ${currency} ${total}`);
+
+    const paymentStatus = order.financial_status;
+    if (paymentStatus) {
+      const payEmoji = paymentStatus === "paid" ? "✅" : "⏳";
+      lines.push(`${payEmoji} Payment: ${paymentStatus}`);
+    }
     lines.push("");
 
-    const email = order.customer?.email || order.email || null;
-    if (email) lines.push(`📧 Customer: ${email}`);
+    // Shipping method + address
+    if (order.shipping_lines?.length > 0) {
+      const method = order.shipping_lines[0].title;
+      if (method) lines.push(`📬 Ship via: ${method}`);
+    }
 
     const addr = order.shipping_address;
     if (addr) {
@@ -53,6 +76,12 @@ export const action = async ({ request }) => {
         addr.country,
       ].filter(Boolean);
       lines.push(`📍 Ship to: ${addrParts.join(", ")}`);
+    }
+
+    // Order notes
+    if (order.note?.trim()) {
+      lines.push("");
+      lines.push(`📝 Notes: ${order.note.trim()}`);
     }
 
     lines.push("");
@@ -77,7 +106,6 @@ export const action = async ({ request }) => {
   }
 
   const order = payload;
-  console.log(`[DEBUG] order.customer=${JSON.stringify(order.customer)} billing=${JSON.stringify(order.billing_address)} shipping=${JSON.stringify(order.shipping_address)} email=${order.email}`);
 
   const claimed = await claimOrderSlot(shop, String(order.id));
   if (!claimed) {
@@ -91,15 +119,17 @@ export const action = async ({ request }) => {
       .filter(Boolean)
       .join(" ")
       .trim() ||
+    order.customer?.name ||
     order.billing_address?.name ||
     order.shipping_address?.name ||
+    order.customer?.email ||
     order.email ||
     "Guest";
 
   const storeHandle = shop.replace(/\.myshopify\.com$/, "");
   const adminOrderUrl = `https://admin.shopify.com/store/${storeHandle}/orders/${order.id}`;
   const taskName = `Order #${orderNumber} — ${customerName}`;
-  const description = buildTaskDescription(order, adminOrderUrl);
+  const description = buildTaskDescription(order, adminOrderUrl, customerName);
 
   const orderCreatedAt = order.created_at ? new Date(order.created_at).getTime() : Date.now();
   const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
