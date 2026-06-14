@@ -210,7 +210,7 @@ export default function Index() {
             <div style={{ flex: 1 }}>
               <h1 style={styles.title}>SyncUp</h1>
               <p style={styles.subtitle}>
-                Automatically turn Shopify orders into ClickUp tasks.
+                Automatically sync your Shopify orders to your project tools.
               </p>
             </div>
             <div
