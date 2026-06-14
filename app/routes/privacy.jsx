@@ -13,7 +13,7 @@ export default function PrivacyPolicy() {
       <div style={styles.container}>
         <header style={styles.header}>
           <div style={styles.logoDot} />
-          <h1 style={styles.title}>SyncUp for ClickUp</h1>
+          <h1 style={styles.title}>SyncUp</h1>
         </header>
 
         <article style={styles.article}>
@@ -22,7 +22,7 @@ export default function PrivacyPolicy() {
 
           <h3 style={styles.h3}>Overview</h3>
           <p style={styles.p}>
-            SyncUp for ClickUp (&ldquo;the App&rdquo;) is a Shopify application that
+            SyncUp (&ldquo;the App&rdquo;) is a Shopify application that
             automatically creates ClickUp tasks when orders are placed in your
             Shopify store, and marks those tasks complete when orders are
             fulfilled. This Privacy Policy explains what data we collect, how we
