@@ -7,8 +7,9 @@ import {
   fetchShopifyCustomer,
   withRetry,
   logActivity,
+  scheduleRetry,
 } from "../clickup.server";
-import { getOrCreateSubscription, isWithinLimit, incrementOrderCount } from "../billing.server";
+import { getOrCreateSubscription, isSubscriptionActive, incrementOrderCount } from "../billing.server";
 
 export const action = async ({ request }) => {
   function buildTaskDescription(order, adminOrderUrl, customerName) {
@@ -95,26 +96,68 @@ export const action = async ({ request }) => {
   console.log(`Received ${topic} webhook for ${shop}`);
 
   const subscription = await getOrCreateSubscription(shop);
-  if (!isWithinLimit(subscription)) {
-    console.log(`Free tier limit reached for ${shop}; skipping order ${payload.id}`);
+  if (!isSubscriptionActive(subscription)) {
+    console.log(`Subscription is inactive for ${shop}; skipping task creation`);
     return new Response();
   }
 
   const connection = await getConnection(shop);
-  if (!connection?.accessToken || !connection.listId) {
+  if (!connection?.accessToken || (!connection.listId && !connection.listConnections)) {
     console.log(`No ClickUp list configured for ${shop}; skipping order ${payload.id}`);
     return new Response();
   }
 
   const order = payload;
+  const orderNumber = String(order.order_number ?? order.number ?? order.id);
 
-  const claimed = await claimOrderSlot(shop, String(order.id));
+  // Determine target list ID using multi-list connection routing
+  let targetListId = connection.listId;
+  let targetListName = connection.listName;
+
+  if (connection.listConnections) {
+    try {
+      const listConns = JSON.parse(connection.listConnections);
+      if (listConns.length > 0) {
+        const lineItems = order.line_items || [];
+        let matched = false;
+        for (const conn of listConns) {
+          if (conn.keyword && conn.keyword.trim()) {
+            const kw = conn.keyword.trim().toLowerCase();
+            const hasMatch = lineItems.some(
+              (item) =>
+                (item.title && item.title.toLowerCase().includes(kw)) ||
+                (item.vendor && item.vendor.toLowerCase().includes(kw)) ||
+                (item.sku && item.sku.toLowerCase().includes(kw))
+            );
+            if (hasMatch) {
+              targetListId = conn.id;
+              targetListName = conn.name;
+              matched = true;
+              break;
+            }
+          }
+        }
+        // If no keyword match was found, use the first list in the connection list
+        if (!matched && listConns[0]) {
+          targetListId = listConns[0].id;
+          targetListName = listConns[0].name;
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse listConnections in webhook:", e);
+    }
+  }
+
+  if (!targetListId) {
+    console.log(`No target ClickUp list found for order ${order.id}; skipping`);
+    return new Response();
+  }
+
+  const claimed = await claimOrderSlot(shop, String(order.id), orderNumber);
   if (!claimed) {
     console.log(`Order ${order.id} already claimed by another webhook; skipping`);
     return new Response();
   }
-
-  const orderNumber = order.order_number ?? order.number ?? order.id;
 
   let customerName =
     [order.customer?.first_name, order.customer?.last_name]
@@ -151,7 +194,7 @@ export const action = async ({ request }) => {
   try {
     const task = await withRetry(
       () =>
-        createTask(connection.accessToken, connection.listId, {
+        createTask(connection.accessToken, targetListId, {
           name: taskName,
           description,
           priority: 3,                          // normal
@@ -160,25 +203,49 @@ export const action = async ({ request }) => {
           tags: ["shopify-order"],
         }),
       1,    // one retry
-      1000  // 1-second delay (5-second delay would exceed Shopify's 5s limit)
+      1000  // 1-second delay
     );
-    await recordOrderTask(shop, String(order.id), task.id, "synced");
+    await recordOrderTask(shop, String(order.id), task.id, "synced", orderNumber);
     await incrementOrderCount(shop);
     logActivity(
       shop,
       "order_synced",
-      `Order #${orderNumber} (${customerName}) synced to ClickUp`
+      `Order #${orderNumber} (${customerName}) synced to ClickUp`,
+      String(order.id),
+      task.id
     );
     console.log(`Created ClickUp task ${task.id} for order ${order.id}`);
   } catch (error) {
     console.error(`Failed to create ClickUp task for order ${order.id}:`, error);
-    // Record a failed task entry so we have a trace
-    await recordOrderTask(shop, String(order.id), "failed", "failed").catch(() => {});
-    logActivity(
-      shop,
-      "sync_failed",
-      `Order #${orderNumber} (${customerName}) — sync failed: ${error.message}`
-    );
+
+    const isGrowth = subscription.planName.startsWith("growth");
+    if (isGrowth) {
+      logActivity(
+        shop,
+        "sync_retried",
+        `Order #${orderNumber} sync failed; retrying in 60 seconds...`,
+        String(order.id)
+      );
+      await recordOrderTask(shop, String(order.id), "pending", "retrying", orderNumber).catch(() => {});
+      scheduleRetry(shop, String(order.id), targetListId, {
+        name: taskName,
+        description,
+        priority: 3,
+        startDate: orderCreatedAt,
+        dueDate: orderCreatedAt + twoDaysMs,
+        tags: ["shopify-order"],
+        orderNumber,
+        customerName,
+      });
+    } else {
+      await recordOrderTask(shop, String(order.id), "failed", "failed", orderNumber).catch(() => {});
+      logActivity(
+        shop,
+        "sync_failed",
+        `Order #${orderNumber} (${customerName}) — sync failed: ${error.message}`,
+        String(order.id)
+      );
+    }
   }
 
   return new Response();

@@ -38,6 +38,10 @@ const shopify = shopifyApp({
       deliveryMethod: DeliveryMethod.Http,
       callbackUrl: "/webhooks/shop/redact",
     },
+    APP_SUBSCRIPTIONS_UPDATE: {
+      deliveryMethod: DeliveryMethod.Http,
+      callbackUrl: "/webhooks/app/subscriptions_update",
+    },
   },
   hooks: {
     afterAuth: async ({ session }) => {

@@ -196,6 +196,7 @@ export async function completeTask(token, taskId) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Persistence helpers — ClickUpConnection
 // ---------------------------------------------------------------------------
 
@@ -207,7 +208,22 @@ export async function getConnection(shop) {
   const accessToken = await decryptToken(conn.accessToken);
   // null means old-format token that can't be decrypted — treat as disconnected
   if (!accessToken) return null;
-  return { ...conn, accessToken };
+
+  let listConnections = [];
+  if (conn.listConnections) {
+    try {
+      listConnections = JSON.parse(conn.listConnections);
+    } catch (e) {
+      console.error("Failed to parse listConnections:", e);
+    }
+  }
+
+  // Backfill if empty but listId exists
+  if (listConnections.length === 0 && conn.listId) {
+    listConnections = [{ id: conn.listId, name: conn.listName || "", keyword: "" }];
+  }
+
+  return { ...conn, accessToken, listConnections };
 }
 
 export async function saveToken(shop, accessToken, workspaceName = null) {
@@ -222,10 +238,64 @@ export async function saveToken(shop, accessToken, workspaceName = null) {
 }
 
 export async function saveList(shop, listId, listName) {
+  const listConnections = [{ id: listId, name: listName, keyword: "" }];
   return prisma.clickUpConnection.update({
     where: { shopDomain: shop },
-    data: { listId, listName },
+    data: {
+      listId,
+      listName,
+      listConnections: JSON.stringify(listConnections),
+    },
   });
+}
+
+export async function saveListConnections(shop, listConnections) {
+  const firstList = listConnections[0] || null;
+  return prisma.clickUpConnection.update({
+    where: { shopDomain: shop },
+    data: {
+      listId: firstList?.id || null,
+      listName: firstList?.name || null,
+      listConnections: JSON.stringify(listConnections),
+    },
+  });
+}
+
+export async function handleDowngradeToListLimit(shop) {
+  const conn = await prisma.clickUpConnection.findUnique({
+    where: { shopDomain: shop },
+  });
+  if (!conn || !conn.listConnections) return null;
+
+  try {
+    const listConns = JSON.parse(conn.listConnections);
+    if (listConns.length > 1) {
+      const kept = listConns.slice(0, 1);
+      const removed = listConns.slice(1);
+      const removedNames = removed.map((c) => c.name).join(", ");
+
+      await prisma.clickUpConnection.update({
+        where: { shopDomain: shop },
+        data: {
+          listId: kept[0].id,
+          listName: kept[0].name,
+          listConnections: JSON.stringify(kept),
+        },
+      });
+
+      // Log activity
+      logActivity(
+        shop,
+        "plan_cancelled",
+        `Downgraded to Starter. Removed extra list connections: ${removedNames}`
+      );
+
+      return removedNames;
+    }
+  } catch (e) {
+    console.error("Failed to handle downgrade list cleanup:", e);
+  }
+  return null;
 }
 
 export async function disconnect(shop) {
@@ -236,13 +306,16 @@ export async function disconnect(shop) {
 // Persistence helpers — OrderTask
 // ---------------------------------------------------------------------------
 
-export async function recordOrderTask(shop, shopifyOrderId, clickupTaskId, status = "synced") {
+export async function recordOrderTask(shop, shopifyOrderId, clickupTaskId, status = "synced", orderNumber = null) {
+  const data = { clickupTaskId, status };
+  if (orderNumber) data.orderNumber = orderNumber;
+
   return prisma.orderTask.upsert({
     where: {
       shopDomain_shopifyOrderId: { shopDomain: shop, shopifyOrderId },
     },
-    update: { clickupTaskId, status },
-    create: { shopDomain: shop, shopifyOrderId, clickupTaskId, status },
+    update: data,
+    create: { shopDomain: shop, shopifyOrderId, clickupTaskId, status, orderNumber },
   });
 }
 
@@ -256,10 +329,10 @@ export async function findOrderTask(shop, shopifyOrderId) {
 
 // Atomically claims an order slot before calling ClickUp.
 // Returns true if this caller won the race, false if another webhook already claimed it.
-export async function claimOrderSlot(shop, shopifyOrderId) {
+export async function claimOrderSlot(shop, shopifyOrderId, orderNumber = null) {
   try {
     await prisma.orderTask.create({
-      data: { shopDomain: shop, shopifyOrderId, clickupTaskId: "pending", status: "pending" },
+      data: { shopDomain: shop, shopifyOrderId, clickupTaskId: "pending", status: "pending", orderNumber },
     });
     return true;
   } catch (e) {
@@ -277,12 +350,122 @@ export async function updateOrderTaskStatus(shop, shopifyOrderId, status) {
 }
 
 // ---------------------------------------------------------------------------
+// Webhook retry logic (Growth plan only)
+// ---------------------------------------------------------------------------
+
+export function scheduleRetry(shop, shopifyOrderId, listId, taskData, attempt = 1) {
+  const delay = attempt === 1 ? 60 * 1000 : 5 * 60 * 1000;
+
+  setTimeout(async () => {
+    try {
+      console.log(`Retrying task creation for order ${shopifyOrderId} (attempt ${attempt})...`);
+
+      const connection = await getConnection(shop);
+      if (!connection?.accessToken) {
+        console.error(`Retry failed: ClickUp not connected for shop ${shop}`);
+        return;
+      }
+
+      // Re-import dynamically to avoid circular dependencies
+      const { incrementOrderCount } = await import("./billing.server");
+
+      const task = await createTask(connection.accessToken, listId, taskData);
+
+      await recordOrderTask(shop, shopifyOrderId, task.id, "synced", taskData.orderNumber);
+      await incrementOrderCount(shop);
+
+      logActivity(
+        shop,
+        "order_synced",
+        `Order #${taskData.orderNumber} (${taskData.customerName}) synced to ClickUp after retry`,
+        shopifyOrderId,
+        task.id
+      );
+      console.log(`Retry successful: Created ClickUp task ${task.id} for order ${shopifyOrderId}`);
+    } catch (err) {
+      console.error(`Retry attempt ${attempt} failed for order ${shopifyOrderId}:`, err);
+
+      if (attempt < 2) {
+        logActivity(
+          shop,
+          "sync_retried",
+          `Order #${taskData.orderNumber} sync failed; retrying again in 5 minutes...`,
+          shopifyOrderId
+        );
+        scheduleRetry(shop, shopifyOrderId, listId, taskData, attempt + 1);
+      } else {
+        await recordOrderTask(shop, shopifyOrderId, "failed", "failed", taskData.orderNumber).catch(() => {});
+        logActivity(
+          shop,
+          "sync_failed",
+          `Order #${taskData.orderNumber} sync failed after all retries: ${err.message}`,
+          shopifyOrderId
+        );
+      }
+    }
+  }, delay);
+}
+
+export function scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, orderNumber, attempt = 1) {
+  const delay = attempt === 1 ? 60 * 1000 : 5 * 60 * 1000;
+
+  setTimeout(async () => {
+    try {
+      console.log(`Retrying task completion for order ${shopifyOrderId} (attempt ${attempt})...`);
+
+      const connection = await getConnection(shop);
+      if (!connection?.accessToken) {
+        console.error(`Retry failed: ClickUp not connected for shop ${shop}`);
+        return;
+      }
+
+      await completeTask(connection.accessToken, clickupTaskId);
+      await updateOrderTaskStatus(shop, shopifyOrderId, "fulfilled");
+
+      logActivity(
+        shop,
+        "order_fulfilled",
+        `Order #${orderNumber} marked complete in ClickUp after retry`,
+        shopifyOrderId,
+        clickupTaskId
+      );
+      console.log(`Retry successful: Completed ClickUp task ${clickupTaskId} for order ${shopifyOrderId}`);
+    } catch (err) {
+      console.error(`Fulfillment retry attempt ${attempt} failed for order ${shopifyOrderId}:`, err);
+
+      if (attempt < 2) {
+        logActivity(
+          shop,
+          "sync_retried",
+          `Order #${orderNumber} fulfillment sync failed; retrying again in 5 minutes...`,
+          shopifyOrderId,
+          clickupTaskId
+        );
+        scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, orderNumber, attempt + 1);
+      } else {
+        logActivity(
+          shop,
+          "sync_failed",
+          `Order #${orderNumber} fulfillment sync failed after all retries: ${err.message}`,
+          shopifyOrderId,
+          clickupTaskId
+        );
+      }
+    }
+  }, delay);
+}
+
+// ---------------------------------------------------------------------------
 // Activity log — fire-and-forget, never blocks callers
 // ---------------------------------------------------------------------------
 
-export function logActivity(shop, eventType, description) {
+export function logActivity(shop, eventType, description, shopifyOrderId = null, clickupTaskId = null) {
+  const data = { shopDomain: shop, eventType, description };
+  if (shopifyOrderId) data.shopifyOrderId = shopifyOrderId;
+  if (clickupTaskId) data.clickupTaskId = clickupTaskId;
+
   prisma.activityLog
-    .create({ data: { shopDomain: shop, eventType, description } })
+    .create({ data })
     .catch((e) => console.error("logActivity failed:", e));
 }
 
@@ -293,3 +476,4 @@ export async function getRecentActivity(shop, limit = 5) {
     take: limit,
   });
 }
+

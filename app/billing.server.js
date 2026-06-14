@@ -3,11 +3,18 @@ import { PLANS } from "./plans";
 export { PLANS };
 
 function isNewMonth(date) {
+  if (!date) return false;
   const now = new Date();
   const d = new Date(date);
   return (
     now.getMonth() !== d.getMonth() || now.getFullYear() !== d.getFullYear()
   );
+}
+
+async function logActivity(shop, eventType, description) {
+  await prisma.activityLog
+    .create({ data: { shopDomain: shop, eventType, description } })
+    .catch((e) => console.error("Billing logActivity failed:", e));
 }
 
 export async function getOrCreateSubscription(shop) {
@@ -16,48 +23,142 @@ export async function getOrCreateSubscription(shop) {
   });
 
   if (!sub) {
-    sub = await prisma.subscription.upsert({
-      where: { shopDomain: shop },
-      update: {},
-      create: { shopDomain: shop, billingCycleStart: new Date() },
+    const trialStart = new Date();
+    const trialEnd = new Date(trialStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+    sub = await prisma.subscription.create({
+      data: {
+        shopDomain: shop,
+        planName: "trial",
+        trialStartDate: trialStart,
+        trialEndDate: trialEnd,
+        isTrialActive: true,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
     });
+    await logActivity(shop, "trial_started", "7-day free trial started");
     return sub;
   }
 
-  if (isNewMonth(sub.billingCycleStart)) {
+  // Handle monthly resetting of sync count for active subscriptions
+  if (sub.billingCycleStart && isNewMonth(sub.billingCycleStart)) {
     sub = await prisma.subscription.update({
       where: { shopDomain: shop },
-      data: { ordersThisMonth: 0, billingCycleStart: new Date() },
+      data: { ordersSyncedThisMonth: 0, billingCycleStart: new Date() },
     });
+  }
+
+  // Also verify if trial has expired and transition state
+  if (sub.planName === "trial" && sub.status === "active") {
+    const now = new Date();
+    if (now > sub.trialEndDate) {
+      sub = await prisma.subscription.update({
+        where: { shopDomain: shop },
+        data: { planName: "expired", status: "expired", isTrialActive: false },
+      });
+      await logActivity(shop, "trial_expired", "Free trial expired; order syncing paused");
+    }
   }
 
   return sub;
 }
 
 export async function incrementOrderCount(shop) {
-  await prisma.subscription.upsert({
+  await prisma.subscription.update({
     where: { shopDomain: shop },
-    update: { ordersThisMonth: { increment: 1 } },
-    create: {
-      shopDomain: shop,
-      ordersThisMonth: 1,
-      billingCycleStart: new Date(),
+    data: {
+      ordersSyncedThisMonth: { increment: 1 },
+      ordersSyncedAllTime: { increment: 1 },
     },
   });
 }
 
-export function isWithinLimit(subscription) {
-  const plan = PLANS[subscription.planName] ?? PLANS.free;
-  if (plan.monthlyOrderLimit === null) return true;
-  return subscription.ordersThisMonth < plan.monthlyOrderLimit;
+export function isSubscriptionActive(subscription) {
+  if (
+    subscription.status === "paused" ||
+    subscription.status === "expired" ||
+    subscription.status === "cancelled" ||
+    subscription.planName === "expired" ||
+    subscription.planName === "cancelled"
+  ) {
+    return false;
+  }
+  if (subscription.planName === "trial") {
+    const now = new Date();
+    if (now > new Date(subscription.trialEndDate)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function getTrialBannerStatus(subscription) {
+  if (!subscription) return null;
+
+  if (
+    subscription.status === "expired" ||
+    subscription.planName === "expired" ||
+    subscription.status === "cancelled" ||
+    subscription.planName === "cancelled"
+  ) {
+    return {
+      expired: true,
+      color: "red",
+      message: "Syncing is paused — upgrade to resume",
+    };
+  }
+
+  if (subscription.planName !== "trial") return null;
+
+  const now = new Date();
+  const trialEnd = new Date(subscription.trialEndDate);
+
+  if (now > trialEnd) {
+    return {
+      expired: true,
+      color: "red",
+      message: "Syncing is paused — upgrade to resume",
+    };
+  }
+
+  const msRemaining = trialEnd.getTime() - now.getTime();
+  const hoursRemaining = msRemaining / (1000 * 60 * 60);
+
+  if (hoursRemaining <= 24) {
+    return {
+      expired: false,
+      color: "red",
+      message: "Your free trial expires today.",
+    };
+  } else if (hoursRemaining <= 48) {
+    return {
+      expired: false,
+      color: "orange",
+      message: "Your free trial ends tomorrow.",
+    };
+  } else if (hoursRemaining <= 72) {
+    return {
+      expired: false,
+      color: "yellow",
+      message: "Your free trial ends in 2 days. Choose a plan to keep syncing.",
+    };
+  } else {
+    const days = Math.ceil(hoursRemaining / 24);
+    return {
+      expired: false,
+      color: "green",
+      message: `Trial active — ${days} days remaining`,
+    };
+  }
 }
 
 export async function createShopifySubscription(admin, shop, planKey) {
   const plan = PLANS[planKey];
-  if (!plan || plan.price === 0)
-    throw new Error("Cannot create a charge for the Free plan.");
+  if (!plan) throw new Error("Plan not found");
 
   const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?activated=${planKey}`;
+  const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
   const res = await admin.graphql(
     `#graphql
@@ -91,14 +192,14 @@ export async function createShopifySubscription(admin, shop, planKey) {
           {
             plan: {
               appRecurringPricingDetails: {
-                price: { amount: plan.price.toFixed(2), currencyCode: "USD" },
-                interval: "EVERY_30_DAYS",
+                price: { amount: parseFloat(plan.price.toFixed(2)), currencyCode: "USD" },
+                interval: interval,
               },
             },
           },
         ],
         returnUrl,
-        test: false,
+        test: true, // test mode enabled
       },
     }
   );
@@ -135,28 +236,44 @@ export async function cancelExistingSubscription(admin, chargeId) {
 }
 
 export async function activateSubscription(shop, planKey, chargeId) {
+  const plan = PLANS[planKey];
+  const now = new Date();
+
   return prisma.subscription.upsert({
     where: { shopDomain: shop },
-    update: { planName: planKey, shopifyChargeId: chargeId, status: "active" },
+    update: {
+      planName: planKey,
+      shopifyChargeId: chargeId,
+      shopifyChargeStatus: "active",
+      isTrialActive: false,
+      status: "active",
+      billingCycleStart: now,
+      annualBilling: plan.annual,
+    },
     create: {
       shopDomain: shop,
       planName: planKey,
       shopifyChargeId: chargeId,
+      shopifyChargeStatus: "active",
+      isTrialActive: false,
       status: "active",
-      billingCycleStart: new Date(),
+      billingCycleStart: now,
+      annualBilling: plan.annual,
+      trialStartDate: now,
+      trialEndDate: now,
     },
   });
 }
 
 export async function downgradeToFree(shop) {
-  return prisma.subscription.upsert({
+  // Acts as a clean fallback to pause/expired status
+  return prisma.subscription.update({
     where: { shopDomain: shop },
-    update: { planName: "free", shopifyChargeId: null, status: "active" },
-    create: {
-      shopDomain: shop,
-      planName: "free",
-      status: "active",
-      billingCycleStart: new Date(),
+    data: {
+      planName: "expired",
+      shopifyChargeId: null,
+      shopifyChargeStatus: null,
+      status: "expired",
     },
   });
 }
