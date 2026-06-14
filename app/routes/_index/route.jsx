@@ -24,37 +24,56 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <div className={styles.header}>
+          <div className={styles.logoMark}>
+            <svg
+              width="32"
+              height="32"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#00c48c"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
+              <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
+            </svg>
+          </div>
+          <h1 className={styles.heading}>SyncUp</h1>
+        </div>
+        
+        <h2 className={styles.title}>Automate your Shopify workflows in ClickUp</h2>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Connect your store in seconds. Automatically create ClickUp tasks for new orders and mark them complete when fulfilled.
         </p>
+
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
             <label className={styles.label}>
               <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
+              <input className={styles.input} type="text" name="shop" placeholder="my-store-name.myshopify.com" />
+              <span className={styles.hint}>Enter your shop domain to get started</span>
             </label>
             <button className={styles.button} type="submit">
-              Log in
+              Install App
             </button>
           </Form>
         )}
+
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Instant Task Creation</strong>. A detailed ClickUp task is created automatically in the list of your choice as soon as a customer places a new order.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Fulfillment Sync</strong>. When you fulfill an order in Shopify, the matching task is automatically marked complete in ClickUp.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Real-time Logs</strong>. Monitor sync status, connection health, and view an activity log directly inside your Shopify admin dashboard.
           </li>
         </ul>
       </div>
     </div>
   );
 }
+
