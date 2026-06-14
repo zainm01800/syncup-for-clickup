@@ -149,10 +149,16 @@ export async function getAllLists(token) {
 }
 
 /** POST /list/{list_id}/task — create a task in the chosen list. */
-export async function createTask(token, listId, { name, description }) {
+export async function createTask(token, listId, { name, description, priority, startDate, dueDate, tags }) {
+  const body = { name, description };
+  if (priority !== undefined) body.priority = priority;
+  if (startDate !== undefined) body.start_date = startDate;
+  if (dueDate !== undefined) body.due_date = dueDate;
+  if (tags !== undefined) body.tags = tags;
+
   return clickupRequest(`/list/${listId}/task`, token, {
     method: "POST",
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify(body),
   });
 }
 

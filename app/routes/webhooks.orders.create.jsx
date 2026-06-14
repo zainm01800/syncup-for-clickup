@@ -100,12 +100,19 @@ export const action = async ({ request }) => {
   const taskName = `Order #${orderNumber} — ${customerName}`;
   const description = buildTaskDescription(order, adminOrderUrl);
 
+  const orderCreatedAt = order.created_at ? new Date(order.created_at).getTime() : Date.now();
+  const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+
   try {
     const task = await withRetry(
       () =>
         createTask(connection.accessToken, connection.listId, {
           name: taskName,
           description,
+          priority: 3,                          // normal
+          startDate: orderCreatedAt,
+          dueDate: orderCreatedAt + twoDaysMs,
+          tags: ["shopify-order"],
         }),
       1,    // one retry
       1000  // 1-second delay (5-second delay would exceed Shopify's 5s limit)
