@@ -5,18 +5,21 @@ export async function fetchShopifyCustomer(shop, customerId) {
   if (!customerId) return null;
   const session = await prisma.session.findFirst({
     where: { shop, isOnline: false },
-    select: { accessToken: true },
+    select: { accessToken: true, scope: true },
   });
+  console.log(`[DEBUG fetchCustomer] shop=${shop} id=${customerId} hasToken=${!!session?.accessToken} scope=${session?.scope}`);
   if (!session?.accessToken) return null;
   try {
     const res = await fetch(
       `https://${shop}/admin/api/2024-01/customers/${customerId}.json`,
       { headers: { "X-Shopify-Access-Token": session.accessToken } }
     );
+    console.log(`[DEBUG fetchCustomer] status=${res.status}`);
     if (!res.ok) return null;
     const { customer } = await res.json();
     return customer ?? null;
-  } catch {
+  } catch (err) {
+    console.log(`[DEBUG fetchCustomer] error=${err.message}`);
     return null;
   }
 }
