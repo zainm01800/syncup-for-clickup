@@ -1,26 +1,25 @@
 import prisma from "./db.server";
 import { encryptToken, decryptToken } from "./crypto.server";
 
+// Fallback used only when the orders/create webhook payload arrives without a
+// customer name (e.g. before protected-customer-data fields were granted, or
+// for guest-ish edge cases). Looks the customer up via the Admin API.
 export async function fetchShopifyCustomer(shop, customerId) {
   if (!customerId) return null;
   const session = await prisma.session.findFirst({
     where: { shop, isOnline: false },
-    select: { accessToken: true, scope: true },
+    select: { accessToken: true },
   });
-  console.log(`[DEBUG fetchCustomer] shop=${shop} id=${customerId} hasToken=${!!session?.accessToken} scope=${session?.scope}`);
   if (!session?.accessToken) return null;
   try {
     const res = await fetch(
-      `https://${shop}/admin/api/2024-01/customers/${customerId}.json`,
+      `https://${shop}/admin/api/2026-07/customers/${customerId}.json`,
       { headers: { "X-Shopify-Access-Token": session.accessToken } }
     );
-    console.log(`[DEBUG fetchCustomer] status=${res.status}`);
     if (!res.ok) return null;
     const { customer } = await res.json();
-    console.log(`[DEBUG fetchCustomer] customer=${JSON.stringify({ first_name: customer?.first_name, last_name: customer?.last_name, email: customer?.email, default_address: customer?.default_address?.name, keys: customer ? Object.keys(customer) : null })}`);
     return customer ?? null;
-  } catch (err) {
-    console.log(`[DEBUG fetchCustomer] error=${err.message}`);
+  } catch {
     return null;
   }
 }
