@@ -14,6 +14,17 @@ export default async function handleRequest(
   reactRouterContext,
 ) {
   addDocumentResponseHeaders(request, responseHeaders);
+
+  responseHeaders.set("X-Content-Type-Options", "nosniff");
+  responseHeaders.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  responseHeaders.set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()");
+
+  const url = new URL(request.url);
+  const shop = url.searchParams.get("shop");
+  if (shop) {
+    const cleanShop = shop.replace(/[^a-zA-Z0-9.-]/g, "");
+    responseHeaders.set("X-Frame-Options", `ALLOW-FROM https://${cleanShop}`);
+  }
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? "") ? "onAllReady" : "onShellReady";
 

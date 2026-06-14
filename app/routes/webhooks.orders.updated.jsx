@@ -36,8 +36,15 @@ export const action = async ({ request }) => {
   }
 
   const record = await findOrderTask(shop, String(order.id));
-  if (!record || record.clickupTaskId === "failed" || record.clickupTaskId === "pending") {
-    console.log(`No ClickUp task recorded for order ${order.id}; skipping`);
+  if (
+    !record ||
+    record.status === "fulfilled" ||
+    record.clickupTaskId === "failed" ||
+    record.clickupTaskId === "pending"
+  ) {
+    console.log(
+      `Order ${order.id} is already fulfilled or has no active ClickUp task; skipping`
+    );
     return new Response();
   }
 

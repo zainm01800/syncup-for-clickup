@@ -9,6 +9,8 @@ export const action = async ({ request }) => {
     prisma.orderTask.deleteMany({ where: { shopDomain: shop } }),
     prisma.clickUpConnection.deleteMany({ where: { shopDomain: shop } }),
     prisma.subscription.deleteMany({ where: { shopDomain: shop } }),
+    prisma.activityLog.deleteMany({ where: { shopDomain: shop } }),
+    prisma.session.deleteMany({ where: { shop: shop } }),
   ]);
 
   console.log(`shop/redact for shop=${shop}: all data deleted`);
