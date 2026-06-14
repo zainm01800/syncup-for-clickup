@@ -229,6 +229,20 @@ export async function findOrderTask(shop, shopifyOrderId) {
   });
 }
 
+// Atomically claims an order slot before calling ClickUp.
+// Returns true if this caller won the race, false if another webhook already claimed it.
+export async function claimOrderSlot(shop, shopifyOrderId) {
+  try {
+    await prisma.orderTask.create({
+      data: { shopDomain: shop, shopifyOrderId, clickupTaskId: "pending", status: "pending" },
+    });
+    return true;
+  } catch (e) {
+    if (e.code === "P2002") return false;
+    throw e;
+  }
+}
+
 export async function updateOrderTaskStatus(shop, shopifyOrderId, status) {
   return prisma.orderTask.updateMany({
     where: { shopDomain: shop, shopifyOrderId },

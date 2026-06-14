@@ -3,7 +3,7 @@ import {
   getConnection,
   createTask,
   recordOrderTask,
-  findOrderTask,
+  claimOrderSlot,
   withRetry,
   logActivity,
 } from "../clickup.server";
@@ -78,9 +78,9 @@ export const action = async ({ request }) => {
 
   const order = payload;
 
-  const existing = await findOrderTask(shop, String(order.id));
-  if (existing) {
-    console.log(`Order ${order.id} already synced; skipping duplicate webhook`);
+  const claimed = await claimOrderSlot(shop, String(order.id));
+  if (!claimed) {
+    console.log(`Order ${order.id} already claimed by another webhook; skipping`);
     return new Response();
   }
 
