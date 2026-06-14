@@ -8,6 +8,7 @@ import {
   createShopifySubscription,
   cancelExistingSubscription,
   activateSubscription,
+  downgradeToFree,
 } from "../billing.server";
 
 export const loader = async ({ request }) => {
@@ -73,20 +74,29 @@ export const action = async ({ request }) => {
   const intent = formData.get("intent");
   const planKey = formData.get("plan");
 
-  if (intent === "upgrade" && planKey && PLANS[planKey]) {
-    const subscription = await getOrCreateSubscription(shop);
-    if (subscription.shopifyChargeId) {
-      await cancelExistingSubscription(admin, subscription.shopifyChargeId);
-    }
-    try {
-      const { confirmationUrl } = await createShopifySubscription(
-        admin,
-        shop,
-        planKey
-      );
-      return { confirmationUrl };
-    } catch (err) {
-      return { error: err.message };
+  if (intent === "upgrade" && planKey) {
+    if (planKey === "free") {
+      const subscription = await getOrCreateSubscription(shop);
+      if (subscription.shopifyChargeId) {
+        await cancelExistingSubscription(admin, subscription.shopifyChargeId);
+      }
+      await downgradeToFree(shop);
+      return redirect("/app?billing_success=1");
+    } else if (PLANS[planKey]) {
+      const subscription = await getOrCreateSubscription(shop);
+      if (subscription.shopifyChargeId) {
+        await cancelExistingSubscription(admin, subscription.shopifyChargeId);
+      }
+      try {
+        const { confirmationUrl } = await createShopifySubscription(
+          admin,
+          shop,
+          planKey
+        );
+        return { confirmationUrl };
+      } catch (err) {
+        return { error: err.message };
+      }
     }
   }
 
@@ -124,13 +134,13 @@ export default function BillingPage() {
     <div style={styles.page}>
       <div style={styles.container}>
         <style>{`
-          @media (max-width: 900px) {
+          @media (max-width: 990px) {
             .su-pricing-grid { grid-template-columns: 1fr !important; }
           }
           .su-pricing-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 24px;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
             margin-top: 16px;
           }
           .su-toggle-container {
@@ -196,14 +206,14 @@ export default function BillingPage() {
         </div>
 
         <div className="su-pricing-grid">
-          {["starter", "growth", "pro"].map((key) => {
-            const planKey = `${key}_${billingInterval}`;
+          {["free", "starter", "growth", "pro"].map((key) => {
+            const planKey = key === "free" ? "free" : `${key}_${billingInterval}`;
             const plan = PLANS[planKey];
             if (!plan) return null;
             const isCurrent = currentPlanKey === planKey;
             const isHighlighted = key === "growth";
 
-            const equivalentPrice = billingInterval === "annual"
+            const equivalentPrice = (key !== "free" && billingInterval === "annual")
               ? (plan.price / 12).toFixed(2)
               : null;
 
@@ -222,7 +232,7 @@ export default function BillingPage() {
                   <div style={styles.pricingPrice}>
                     <span style={styles.priceAmount}>${plan.price}</span>
                     <span style={styles.priceInterval}>
-                      {billingInterval === "monthly" ? "/mo" : "/yr"}
+                      {key === "free" ? "/mo" : billingInterval === "monthly" ? "/mo" : "/yr"}
                     </span>
                     {equivalentPrice && (
                       <div style={styles.priceSubtext}>
@@ -251,7 +261,13 @@ export default function BillingPage() {
                         }}
                         disabled={isSubmitting}
                       >
-                        {isSubmitting ? "Please wait…" : `Select ${plan.name}`}
+                        {isSubmitting
+                          ? "Please wait…"
+                          : key === "free"
+                          ? currentPlanKey.startsWith("starter") || currentPlanKey.startsWith("growth") || currentPlanKey.startsWith("pro")
+                            ? "Downgrade to Free"
+                            : "Select Free"
+                          : `Select ${plan.name}`}
                       </button>
                     </Form>
                   )}
@@ -279,7 +295,7 @@ const styles = {
     boxSizing: "border-box",
   },
   container: {
-    maxWidth: "1080px",
+    maxWidth: "1200px",
     margin: "0 auto",
   },
   header: {
