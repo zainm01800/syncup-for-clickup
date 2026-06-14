@@ -40,12 +40,18 @@ export const loader = async ({ request }) => {
     );
 
     if (match) {
-      const isDowngrade = subscription.planName.startsWith("growth") && activated.startsWith("starter");
-      let removedListNames = null;
+      const getLimitForPlan = (planName) => {
+        if (planName === "trial") return 5;
+        const p = PLANS[planName];
+        return p ? p.listLimit : 1;
+      };
+      const currentLimit = getLimitForPlan(subscription.planName);
+      const newLimit = getLimitForPlan(activated);
 
-      if (isDowngrade) {
+      let removedListNames = null;
+      if (newLimit < currentLimit) {
         const { handleDowngradeToListLimit } = await import("../clickup.server");
-        removedListNames = await handleDowngradeToListLimit(shop);
+        removedListNames = await handleDowngradeToListLimit(shop, newLimit);
       }
 
       await activateSubscription(shop, activated, match.id);
@@ -118,12 +124,12 @@ export default function BillingPage() {
     <div style={styles.page}>
       <div style={styles.container}>
         <style>{`
-          @media (max-width: 600px) {
+          @media (max-width: 900px) {
             .su-pricing-grid { grid-template-columns: 1fr !important; }
           }
           .su-pricing-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             gap: 24px;
             margin-top: 16px;
           }
@@ -190,86 +196,38 @@ export default function BillingPage() {
         </div>
 
         <div className="su-pricing-grid">
-          {/* Starter Card */}
-          {(() => {
-            const planKey = billingInterval === "monthly" ? "starter_monthly" : "starter_annual";
+          {["starter", "growth", "pro"].map((key) => {
+            const planKey = `${key}_${billingInterval}`;
             const plan = PLANS[planKey];
+            if (!plan) return null;
             const isCurrent = currentPlanKey === planKey;
+            const isHighlighted = key === "growth";
 
-            return (
-              <div style={{ ...styles.pricingCard, ...(isCurrent ? styles.currentCard : {}) }}>
-                <div style={styles.pricingHeader}>
-                  <h3 style={styles.pricingTitle}>{plan.name}</h3>
-                  <div style={styles.pricingPrice}>
-                    {billingInterval === "monthly" ? (
-                      <>
-                        <span style={styles.priceAmount}>$29.99</span>
-                        <span style={styles.priceInterval}>/mo</span>
-                      </>
-                    ) : (
-                      <>
-                        <span style={styles.priceAmount}>$239</span>
-                        <span style={styles.priceInterval}>/yr</span>
-                        <div style={styles.priceSubtext}>Equivalent to $19.92/mo</div>
-                      </>
-                    )}
-                  </div>
-                </div>
-                <ul style={styles.pricingFeatures}>
-                  {plan.features.map((feat) => (
-                    <li key={feat}>✓ {feat}</li>
-                  ))}
-                </ul>
-                <div style={styles.planAction}>
-                  {isCurrent ? (
-                    <div style={styles.currentLabel}>Active plan</div>
-                  ) : (
-                    <Form method="post">
-                      <input type="hidden" name="intent" value="upgrade" />
-                      <input type="hidden" name="plan" value={planKey} />
-                      <button
-                        type="submit"
-                        style={styles.pricingButton}
-                        disabled={isSubmitting}
-                      >
-                        {isSubmitting ? "Please wait…" : `Select ${plan.name}`}
-                      </button>
-                    </Form>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Growth Card */}
-          {(() => {
-            const planKey = billingInterval === "monthly" ? "growth_monthly" : "growth_annual";
-            const plan = PLANS[planKey];
-            const isCurrent = currentPlanKey === planKey;
+            const equivalentPrice = billingInterval === "annual"
+              ? (plan.price / 12).toFixed(2)
+              : null;
 
             return (
               <div
+                key={key}
                 style={{
                   ...styles.pricingCard,
-                  ...styles.pricingCardHighlighted,
+                  ...(isHighlighted ? styles.pricingCardHighlighted : {}),
                   ...(isCurrent ? styles.currentCard : {}),
                 }}
               >
-                <div style={styles.popularBadge}>Most popular</div>
+                {isHighlighted && <div style={styles.popularBadge}>Most popular</div>}
                 <div style={styles.pricingHeader}>
                   <h3 style={styles.pricingTitle}>{plan.name}</h3>
                   <div style={styles.pricingPrice}>
-                    {billingInterval === "monthly" ? (
-                      <>
-                        <span style={styles.priceAmount}>$49.99</span>
-                        <span style={styles.priceInterval}>/mo</span>
-                      </>
-                    ) : (
-                      <>
-                        <span style={styles.priceAmount}>$419</span>
-                        <span style={styles.priceInterval}>/yr</span>
-                        <div style={styles.priceSubtext}>Equivalent to $34.92/mo</div>
-                      </>
+                    <span style={styles.priceAmount}>${plan.price}</span>
+                    <span style={styles.priceInterval}>
+                      {billingInterval === "monthly" ? "/mo" : "/yr"}
+                    </span>
+                    {equivalentPrice && (
+                      <div style={styles.priceSubtext}>
+                        Equivalent to ${equivalentPrice}/mo
+                      </div>
                     )}
                   </div>
                 </div>
@@ -287,7 +245,10 @@ export default function BillingPage() {
                       <input type="hidden" name="plan" value={planKey} />
                       <button
                         type="submit"
-                        style={{ ...styles.pricingButton, ...styles.pricingButtonHighlighted }}
+                        style={{
+                          ...styles.pricingButton,
+                          ...(isHighlighted ? styles.pricingButtonHighlighted : {}),
+                        }}
                         disabled={isSubmitting}
                       >
                         {isSubmitting ? "Please wait…" : `Select ${plan.name}`}
@@ -297,7 +258,7 @@ export default function BillingPage() {
                 </div>
               </div>
             );
-          })()}
+          })}
         </div>
 
         <p style={styles.note}>
@@ -318,7 +279,7 @@ const styles = {
     boxSizing: "border-box",
   },
   container: {
-    maxWidth: "720px",
+    maxWidth: "1080px",
     margin: "0 auto",
   },
   header: {

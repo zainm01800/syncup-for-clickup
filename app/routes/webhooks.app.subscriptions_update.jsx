@@ -8,6 +8,8 @@ const PLAN_NAME_MAP = {
   "SyncUp Starter Annual": "starter_annual",
   "SyncUp Growth Monthly": "growth_monthly",
   "SyncUp Growth Annual": "growth_annual",
+  "SyncUp Pro Monthly": "pro_monthly",
+  "SyncUp Pro Annual": "pro_annual",
 };
 
 export const action = async ({ request }) => {
@@ -64,12 +66,11 @@ export const action = async ({ request }) => {
 
     logActivity(shop, "plan_activated", `Plan "${plan.name}" activated successfully`);
 
-    // Clean up lists on downgrade
-    if (isDowngrade) {
-      const removedListNames = await handleDowngradeToListLimit(shop);
-      if (removedListNames) {
-        console.log(`Downgraded from Growth to Starter. Removed lists: ${removedListNames}`);
-      }
+    // Clean up lists if currently connected count exceeds new plan limit
+    const newListLimit = plan.listLimit || 1;
+    const removedListNames = await handleDowngradeToListLimit(shop, newListLimit);
+    if (removedListNames) {
+      console.log(`Plan change list limit enforcement: Removed lists: ${removedListNames}`);
     }
   } else if (shopifyStatus === "CANCELLED" || shopifyStatus === "EXPIRED" || shopifyStatus === "DECLINED") {
     // Only pause/cancel if the charge matches the active subscription charge ID to prevent racing webhooks

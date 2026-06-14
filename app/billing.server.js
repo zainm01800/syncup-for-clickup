@@ -89,12 +89,33 @@ export function isSubscriptionActive(subscription) {
     if (now > new Date(subscription.trialEndDate)) {
       return false;
     }
+  } else {
+    const plan = PLANS[subscription.planName];
+    if (plan && plan.monthlyOrderLimit !== null) {
+      if (subscription.ordersSyncedThisMonth >= plan.monthlyOrderLimit) {
+        return false;
+      }
+    }
   }
   return true;
 }
 
 export function getTrialBannerStatus(subscription) {
   if (!subscription) return null;
+
+  // Check paid plan monthly order limits
+  if (subscription.planName !== "trial" && subscription.planName !== "expired" && subscription.planName !== "cancelled") {
+    const plan = PLANS[subscription.planName];
+    if (plan && plan.monthlyOrderLimit !== null) {
+      if (subscription.ordersSyncedThisMonth >= plan.monthlyOrderLimit) {
+        return {
+          expired: true,
+          color: "red",
+          message: `Monthly order limit reached (${subscription.ordersSyncedThisMonth}/${plan.monthlyOrderLimit} orders synced). Upgrade to keep syncing.`,
+        };
+      }
+    }
+  }
 
   if (
     subscription.status === "expired" ||

@@ -56,7 +56,7 @@ export const loader = async ({ request }) => {
     syncStatus = isTrialOrSubscriptionActive ? "active" : "paused";
   }
 
-  const isGrowth = subscription.planName.startsWith("growth");
+  const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
   const totalSyncedMonth = subscription.ordersSyncedThisMonth || 0;
   const totalSyncedAllTime = subscription.ordersSyncedAllTime || 0;
 
@@ -72,7 +72,7 @@ export const loader = async ({ request }) => {
     take: 10,
   });
 
-  const plan = PLANS[subscription.planName] || { name: "Free Trial", listLimit: 1 };
+  const plan = PLANS[subscription.planName] || (subscription.planName === "trial" ? { name: "Free Trial", listLimit: 5 } : { name: "Expired/Cancelled", listLimit: 1 });
   const listLimit = plan.listLimit || 1;
 
   return {
@@ -142,7 +142,7 @@ export const action = async ({ request }) => {
       }
 
       const sub = await getOrCreateSubscription(shop);
-      const plan = PLANS[sub.planName] || { listLimit: 1 };
+      const plan = PLANS[sub.planName] || (sub.planName === "trial" ? { listLimit: 5 } : { listLimit: 1 });
       const limit = plan.listLimit || 1;
 
       if (conns.length > limit) {
@@ -425,92 +425,61 @@ export default function Index() {
               </div>
 
               <div className="su-pricing-grid">
-                {/* Starter card */}
-                <div style={styles.pricingCard}>
-                  <div style={styles.pricingHeader}>
-                    <h3 style={styles.pricingTitle}>Starter</h3>
-                    <div style={styles.pricingPrice}>
-                      {billingInterval === "monthly" ? (
-                        <>
-                          <span style={styles.priceAmount}>$29.99</span>
-                          <span style={styles.priceInterval}>/mo</span>
-                        </>
-                      ) : (
-                        <>
-                          <span style={styles.priceAmount}>$239</span>
-                          <span style={styles.priceInterval}>/yr</span>
-                          <div style={styles.priceSubtext}>Equivalent to $19.92/mo</div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <ul style={styles.pricingFeatures}>
-                    <li>✓ Unlimited orders synced</li>
-                    <li>✓ 1 ClickUp list connection</li>
-                    <li>✓ Email support</li>
-                    <li>✓ Full order to task sync</li>
-                    <li>✓ Fulfillment completion sync</li>
-                  </ul>
-                  <Form method="post" action="/app/billing" target="_top">
-                    <input type="hidden" name="intent" value="upgrade" />
-                    <input
-                      type="hidden"
-                      name="plan"
-                      value={billingInterval === "monthly" ? "starter_monthly" : "starter_annual"}
-                    />
-                    <button
-                      type="submit"
-                      style={styles.pricingButton}
-                      disabled={isSubmitting}
-                    >
-                      Choose Starter
-                    </button>
-                  </Form>
-                </div>
+                {["starter", "growth", "pro"].map((key) => {
+                  const planKey = `${key}_${billingInterval}`;
+                  const plan = PLANS[planKey];
+                  if (!plan) return null;
+                  const isHighlighted = key === "growth";
 
-                {/* Growth card */}
-                <div style={{ ...styles.pricingCard, ...styles.pricingCardHighlighted }}>
-                  <div style={styles.popularBadge}>Most popular</div>
-                  <div style={styles.pricingHeader}>
-                    <h3 style={styles.pricingTitle}>Growth</h3>
-                    <div style={styles.pricingPrice}>
-                      {billingInterval === "monthly" ? (
-                        <>
-                          <span style={styles.priceAmount}>$49.99</span>
-                          <span style={styles.priceInterval}>/mo</span>
-                        </>
-                      ) : (
-                        <>
-                          <span style={styles.priceAmount}>$419</span>
-                          <span style={styles.priceInterval}>/yr</span>
-                          <div style={styles.priceSubtext}>Equivalent to $34.92/mo</div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <ul style={styles.pricingFeatures}>
-                    <li>✓ Everything in Starter</li>
-                    <li>✓ Up to 5 ClickUp list connections</li>
-                    <li>✓ Priority support</li>
-                    <li>✓ Sync analytics dashboard</li>
-                    <li>✓ Auto-retry logic on failures</li>
-                  </ul>
-                  <Form method="post" action="/app/billing" target="_top">
-                    <input type="hidden" name="intent" value="upgrade" />
-                    <input
-                      type="hidden"
-                      name="plan"
-                      value={billingInterval === "monthly" ? "growth_monthly" : "growth_annual"}
-                    />
-                    <button
-                      type="submit"
-                      style={{ ...styles.pricingButton, ...styles.pricingButtonHighlighted }}
-                      disabled={isSubmitting}
+                  const equivalentPrice = billingInterval === "annual"
+                    ? (plan.price / 12).toFixed(2)
+                    : null;
+
+                  return (
+                    <div
+                      key={key}
+                      style={{
+                        ...styles.pricingCard,
+                        ...(isHighlighted ? styles.pricingCardHighlighted : {}),
+                      }}
                     >
-                      Choose Growth
-                    </button>
-                  </Form>
-                </div>
+                      {isHighlighted && <div style={styles.popularBadge}>Most popular</div>}
+                      <div style={styles.pricingHeader}>
+                        <h3 style={styles.pricingTitle}>{plan.name}</h3>
+                        <div style={styles.pricingPrice}>
+                          <span style={styles.priceAmount}>${plan.price}</span>
+                          <span style={styles.priceInterval}>
+                            {billingInterval === "monthly" ? "/mo" : "/yr"}
+                          </span>
+                          {equivalentPrice && (
+                            <div style={styles.priceSubtext}>
+                              Equivalent to ${equivalentPrice}/mo
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <ul style={styles.pricingFeatures}>
+                        {plan.features.map((feat) => (
+                          <li key={feat}>✓ {feat}</li>
+                        ))}
+                      </ul>
+                      <Form method="post" action="/app/billing" target="_top">
+                        <input type="hidden" name="intent" value="upgrade" />
+                        <input type="hidden" name="plan" value={planKey} />
+                        <button
+                          type="submit"
+                          style={{
+                            ...styles.pricingButton,
+                            ...(isHighlighted ? styles.pricingButtonHighlighted : {}),
+                          }}
+                          disabled={isSubmitting}
+                        >
+                          Choose {plan.name.split(" ")[0]}
+                        </button>
+                      </Form>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           ) : (
@@ -690,11 +659,11 @@ export default function Index() {
                 </section>
               )}
 
-              {/* SECTION 4 — SYNC ANALYTICS (locked for Starter, active for Growth, active during trial) */}
+              {/* SECTION 4 — SYNC ANALYTICS (locked for Starter, active for Growth/Pro, active during trial) */}
               {(() => {
                 const isTrial = subscription.planName === "trial";
-                const isGrowth = subscription.planName.startsWith("growth");
-                const isAnalyticsUnlocked = isGrowth || isTrial;
+                const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+                const isAnalyticsUnlocked = isGrowthOrPro || isTrial;
 
                 return (
                   <section style={{ ...styles.card, marginTop: 16, position: "relative", overflow: "hidden" }}>

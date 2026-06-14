@@ -218,8 +218,8 @@ export const action = async ({ request }) => {
   } catch (error) {
     console.error(`Failed to create ClickUp task for order ${order.id}:`, error);
 
-    const isGrowth = subscription.planName.startsWith("growth");
-    if (isGrowth) {
+    const hasRetryFeature = subscription.planName === "trial" || subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+    if (hasRetryFeature) {
       logActivity(
         shop,
         "sync_retried",

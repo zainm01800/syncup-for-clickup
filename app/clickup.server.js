@@ -261,7 +261,7 @@ export async function saveListConnections(shop, listConnections) {
   });
 }
 
-export async function handleDowngradeToListLimit(shop) {
+export async function handleDowngradeToListLimit(shop, listLimit = 1) {
   const conn = await prisma.clickUpConnection.findUnique({
     where: { shopDomain: shop },
   });
@@ -269,16 +269,16 @@ export async function handleDowngradeToListLimit(shop) {
 
   try {
     const listConns = JSON.parse(conn.listConnections);
-    if (listConns.length > 1) {
-      const kept = listConns.slice(0, 1);
-      const removed = listConns.slice(1);
+    if (listConns.length > listLimit) {
+      const kept = listConns.slice(0, listLimit);
+      const removed = listConns.slice(listLimit);
       const removedNames = removed.map((c) => c.name).join(", ");
 
       await prisma.clickUpConnection.update({
         where: { shopDomain: shop },
         data: {
-          listId: kept[0].id,
-          listName: kept[0].name,
+          listId: kept[0]?.id || null,
+          listName: kept[0]?.name || null,
           listConnections: JSON.stringify(kept),
         },
       });
@@ -287,7 +287,7 @@ export async function handleDowngradeToListLimit(shop) {
       logActivity(
         shop,
         "plan_cancelled",
-        `Downgraded to Starter. Removed extra list connections: ${removedNames}`
+        `Plan limit check: kept ${listLimit} list(s). Removed extra list connections: ${removedNames}`
       );
 
       return removedNames;
