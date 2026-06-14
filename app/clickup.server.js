@@ -1,6 +1,26 @@
 import prisma from "./db.server";
 import { encryptToken, decryptToken } from "./crypto.server";
 
+export async function fetchShopifyCustomer(shop, customerId) {
+  if (!customerId) return null;
+  const session = await prisma.session.findFirst({
+    where: { shop, isOnline: false },
+    select: { accessToken: true },
+  });
+  if (!session?.accessToken) return null;
+  try {
+    const res = await fetch(
+      `https://${shop}/admin/api/2024-01/customers/${customerId}.json`,
+      { headers: { "X-Shopify-Access-Token": session.accessToken } }
+    );
+    if (!res.ok) return null;
+    const { customer } = await res.json();
+    return customer ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ClickUp OAuth + API endpoints (see https://clickup.com/api).
 const CLICKUP_AUTHORIZE_URL = "https://app.clickup.com/api";
 const CLICKUP_TOKEN_URL = "https://api.clickup.com/api/v2/oauth/token";

@@ -4,6 +4,7 @@ import {
   createTask,
   recordOrderTask,
   claimOrderSlot,
+  fetchShopifyCustomer,
   withRetry,
   logActivity,
 } from "../clickup.server";
@@ -106,7 +107,6 @@ export const action = async ({ request }) => {
   }
 
   const order = payload;
-  console.log(`[DEBUG customer] id=${order.customer?.id} first=${order.customer?.first_name} last=${order.customer?.last_name} name=${order.customer?.name} email=${order.customer?.email || order.email} billing_name=${order.billing_address?.name} shipping_name=${order.shipping_address?.name}`);
 
   const claimed = await claimOrderSlot(shop, String(order.id));
   if (!claimed) {
@@ -115,17 +115,26 @@ export const action = async ({ request }) => {
   }
 
   const orderNumber = order.order_number ?? order.number ?? order.id;
-  const customerName =
+
+  let customerName =
     [order.customer?.first_name, order.customer?.last_name]
-      .filter(Boolean)
-      .join(" ")
-      .trim() ||
+      .filter(Boolean).join(" ").trim() ||
     order.customer?.name ||
     order.billing_address?.name ||
     order.shipping_address?.name ||
     order.customer?.email ||
-    order.email ||
-    "Guest";
+    order.email;
+
+  if (!customerName && order.customer?.id) {
+    const fullCustomer = await fetchShopifyCustomer(shop, order.customer.id);
+    if (fullCustomer) {
+      customerName =
+        [fullCustomer.first_name, fullCustomer.last_name].filter(Boolean).join(" ").trim() ||
+        fullCustomer.email;
+    }
+  }
+
+  customerName = customerName || "Guest";
 
   const storeHandle = shop.replace(/\.myshopify\.com$/, "");
   const adminOrderUrl = `https://admin.shopify.com/store/${storeHandle}/orders/${order.id}`;
