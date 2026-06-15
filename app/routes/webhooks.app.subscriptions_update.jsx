@@ -4,8 +4,8 @@ import { PLANS } from "../plans";
 import { logActivity, handleDowngradeToListLimit } from "../clickup.server";
 
 const PLAN_NAME_MAP = {
-  "SyncUp Starter Monthly": "starter_monthly",
-  "SyncUp Starter Annual": "starter_annual",
+  "SyncUp Standard Monthly": "standard_monthly",
+  "SyncUp Standard Annual": "standard_annual",
   "SyncUp Growth Monthly": "growth_monthly",
   "SyncUp Growth Annual": "growth_annual",
   "SyncUp Pro Monthly": "pro_monthly",
@@ -37,7 +37,7 @@ export const action = async ({ request }) => {
     }
 
     const plan = PLANS[planKey];
-    const isDowngrade = sub && sub.planName.startsWith("growth") && planKey.startsWith("starter");
+    const isDowngrade = sub && sub.planName.startsWith("growth") && planKey.startsWith("standard");
 
     await prisma.subscription.upsert({
       where: { shopDomain: shop },

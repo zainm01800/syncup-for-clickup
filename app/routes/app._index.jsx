@@ -267,8 +267,8 @@ export default function Index() {
   const getPlanDisplayName = (planName) => {
     if (planName === "trial") return "Free Trial";
     if (planName === "free") return "Free Plan";
-    if (planName === "starter_monthly") return "Starter Monthly";
-    if (planName === "starter_annual") return "Starter Annual";
+    if (planName === "standard_monthly") return "Standard Monthly";
+    if (planName === "standard_annual") return "Standard Annual";
     if (planName === "growth_monthly") return "Growth Monthly";
     if (planName === "growth_annual") return "Growth Annual";
     if (planName === "expired") return "Trial Expired";
@@ -389,7 +389,7 @@ export default function Index() {
           )}
           {removedLists && (
             <div style={{ ...styles.warningBanner, marginBottom: 16 }}>
-              ⚠️ Downgraded to Starter plan. The following extra list connections were removed: <strong>{removedLists}</strong>
+              ⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong>
             </div>
           )}
           {(clickupError || actionData?.error) && (
@@ -400,82 +400,169 @@ export default function Index() {
 
           {showFullPageUpgrade ? (
             /* SECTION 2 (Pricing cards) shown as full-page settings overlay */
-            <section style={styles.card}>
-              <div style={{ textAlign: "center", marginBottom: 24 }}>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 8px" }}>Activate a subscription to resume syncing</h2>
-                <p style={{ color: C.muted, fontSize: 14, margin: 0 }}>
-                  SyncUp has paused order task creation. Select a plan below to unlock syncing immediately.
+            <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-8 max-w-6xl mx-auto shadow-2xl backdrop-blur-md">
+              <div className="text-center mb-8 max-w-2xl mx-auto">
+                <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-2">
+                  Activate a subscription to resume syncing
+                </h2>
+                <p className="text-sm text-zinc-400 leading-relaxed">
+                  SyncUp has paused order task creation because you do not have an active subscription. Choose a plan below to unlock syncing immediately.
                 </p>
               </div>
 
-              <div className="su-toggle-container">
-                <button
-                  type="button"
-                  className={`su-toggle-btn ${billingInterval === "monthly" ? "active" : ""}`}
-                  onClick={() => setBillingInterval("monthly")}
-                >
-                  Monthly billing
-                </button>
-                <button
-                  type="button"
-                  className={`su-toggle-btn ${billingInterval === "annual" ? "active" : ""}`}
-                  onClick={() => setBillingInterval("annual")}
-                >
-                  Annual billing (Save ~30%)
-                </button>
+              {/* Launch Special / Urgency Banner */}
+              <div className="bg-emerald-950/20 border border-emerald-500/30 text-emerald-400 p-4 rounded-xl text-xs sm:text-sm flex items-start gap-3 mb-10 max-w-3xl mx-auto shadow-md">
+                <span className="text-lg leading-none">🚀</span>
+                <div>
+                  <strong className="font-semibold block mb-0.5 text-emerald-300">LAUNCH SPECIAL OFFER</strong>
+                  Install today to lock in these discounted B2B rates forever. Once our beta ends, pricing will increase for new installs. Existing merchants will remain grandfathered on these plans indefinitely!
+                </div>
               </div>
 
-              <div className="su-pricing-grid">
-                {["starter", "growth", "pro"].map((key) => {
+              {/* Toggle */}
+              <div className="flex justify-center items-center gap-3 mb-10">
+                <span className={`text-xs font-semibold transition-colors duration-200 ${billingInterval === "monthly" ? "text-zinc-100" : "text-zinc-500"}`}>
+                  Monthly Billing
+                </span>
+                <button
+                  type="button"
+                  className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none bg-zinc-800"
+                  onClick={() => setBillingInterval(billingInterval === "monthly" ? "annual" : "monthly")}
+                  role="switch"
+                  aria-checked={billingInterval === "annual"}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-emerald-400 shadow ring-0 transition duration-200 ease-in-out ${
+                      billingInterval === "annual" ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+                <span className={`text-xs font-semibold transition-colors duration-200 ${billingInterval === "annual" ? "text-emerald-400" : "text-zinc-500"}`}>
+                  Annual Billing <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold ml-1 border border-emerald-400/20">Save ~30%</span>
+                </span>
+              </div>
+
+              {/* Pricing Cards Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+                {["standard", "growth", "pro"].map((key) => {
                   const planKey = `${key}_${billingInterval}`;
                   const plan = PLANS[planKey];
                   if (!plan) return null;
                   const isHighlighted = key === "growth";
+                  
+                  const overlayPlanSpecs = {
+                    standard: {
+                      badge: "Best for Starters",
+                      priceDesc: "$29.99/mo",
+                      annualPriceDesc: "$19.99/mo",
+                      billedDesc: "Billed annually as $239",
+                      regMonthly: "$49.99",
+                      regAnnual: "$399",
+                    },
+                    growth: {
+                      badge: "Most Popular",
+                      priceDesc: "$49.99/mo",
+                      annualPriceDesc: "$34.99/mo",
+                      billedDesc: "Billed annually as $419",
+                      regMonthly: "$79.99",
+                      regAnnual: "$699",
+                    },
+                    pro: {
+                      badge: "Concierge Setup Included",
+                      priceDesc: "$99.99/mo",
+                      annualPriceDesc: "$69.99/mo",
+                      billedDesc: "Billed annually as $839",
+                      regMonthly: "$149.99",
+                      regAnnual: "$1199",
+                    },
+                  };
+                  const spec = overlayPlanSpecs[key];
 
-                  const equivalentPrice = billingInterval === "annual"
-                    ? (plan.price / 12).toFixed(2)
-                    : null;
+                  const displayPrice = billingInterval === "annual" 
+                    ? spec.annualPriceDesc 
+                    : spec.priceDesc;
+
+                  const regularPrice = billingInterval === "annual"
+                    ? spec.regAnnual
+                    : spec.regMonthly;
 
                   return (
                     <div
                       key={key}
-                      style={{
-                        ...styles.pricingCard,
-                        ...(isHighlighted ? styles.pricingCardHighlighted : {}),
-                      }}
+                      className={`bg-zinc-950/45 border rounded-2xl p-6 flex flex-col justify-between transition-all duration-300 relative ${
+                        isHighlighted 
+                          ? "border-emerald-500/40 shadow-xl shadow-emerald-950/15 hover:border-emerald-500/60" 
+                          : "border-zinc-800 hover:border-zinc-700"
+                      }`}
                     >
-                      {isHighlighted && <div style={styles.popularBadge}>Most popular</div>}
-                      <div style={styles.pricingHeader}>
-                        <h3 style={styles.pricingTitle}>{plan.name}</h3>
-                        <div style={styles.pricingPrice}>
-                          <span style={styles.priceAmount}>${plan.price}</span>
-                          <span style={styles.priceInterval}>
-                            {billingInterval === "monthly" ? "/mo" : "/yr"}
+                      {isHighlighted && (
+                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
+                          {spec.badge}
+                        </div>
+                      )}
+
+                      <div>
+                        <div className="mb-4">
+                          <span className="text-zinc-500 text-[10px] font-semibold tracking-wider uppercase block mb-1">
+                            {key} tier
                           </span>
-                          {equivalentPrice && (
-                            <div style={styles.priceSubtext}>
-                              Equivalent to ${equivalentPrice}/mo
+                          <h3 className="text-base font-bold text-white tracking-tight">{plan.name}</h3>
+                        </div>
+
+                        {/* Price */}
+                        <div className="mb-6">
+                          <div className="flex items-baseline flex-wrap gap-1">
+                            {regularPrice && (
+                              <span className="text-xs text-zinc-500 line-through mr-1 font-medium">
+                                {regularPrice}
+                              </span>
+                            )}
+                            <span className="text-2xl font-extrabold text-white tracking-tight">
+                              {displayPrice.split("/")[0]}
+                            </span>
+                            <span className="text-zinc-400 text-xs font-medium">
+                              /{displayPrice.split("/")[1]}
+                            </span>
+                          </div>
+
+                          {/* Annual details */}
+                          {billingInterval === "annual" && (
+                            <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                              {spec.billedDesc} ({spec.priceDesc} equivalent)
                             </div>
                           )}
                         </div>
+
+                        {/* Divider */}
+                        <div className="h-px bg-zinc-800/80 mb-5"></div>
+
+                        {/* Features */}
+                        <ul className="space-y-3 mb-6 text-xs text-zinc-300">
+                          {plan.features.map((feat) => (
+                            <li key={feat} className="flex items-start">
+                              <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
+                              <span className="leading-snug">{feat}</span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
-                      <ul style={styles.pricingFeatures}>
-                        {plan.features.map((feat) => (
-                          <li key={feat}>✓ {feat}</li>
-                        ))}
-                      </ul>
-                      <Form method="post" action="/app/billing" target="_top">
+
+                      {/* Submit action */}
+                      <Form method="post" action="/app/billing" target="_top" className="mt-auto">
                         <input type="hidden" name="intent" value="upgrade" />
                         <input type="hidden" name="plan" value={planKey} />
                         <button
                           type="submit"
-                          style={{
-                            ...styles.pricingButton,
-                            ...(isHighlighted ? styles.pricingButtonHighlighted : {}),
-                          }}
+                          className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
+                            isHighlighted
+                              ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
+                              : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
+                          }`}
                           disabled={isSubmitting}
                         >
-                          Choose {plan.name.split(" ")[0]}
+                          {isSubmitting ? "Connecting..." : `Select ${plan.name.split(" ")[0]}`}
                         </button>
                       </Form>
                     </div>
@@ -660,7 +747,7 @@ export default function Index() {
                 </section>
               )}
 
-              {/* SECTION 4 — SYNC ANALYTICS (locked for Starter, active for Growth/Pro, active during trial) */}
+              {/* SECTION 4 — SYNC ANALYTICS (locked for Standard, active for Growth/Pro, active during trial) */}
               {(() => {
                 const isTrial = subscription.planName === "trial";
                 const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");

@@ -226,12 +226,14 @@ export async function createShopifySubscription(admin, shop, planKey) {
       $lineItems: [AppSubscriptionLineItemInput!]!
       $returnUrl: URL!
       $test: Boolean
+      $replacementBehavior: AppSubscriptionReplacementBehavior
     ) {
       appSubscriptionCreate(
         name: $name
         lineItems: $lineItems
         returnUrl: $returnUrl
         test: $test
+        replacementBehavior: $replacementBehavior
       ) {
         appSubscription {
           id
@@ -259,6 +261,7 @@ export async function createShopifySubscription(admin, shop, planKey) {
         ],
         returnUrl,
         test: true, // test mode enabled
+        replacementBehavior: "CHARGE_ON_NEXT_BILLING_CYCLE",
       },
     }
   );
