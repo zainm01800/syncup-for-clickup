@@ -189,9 +189,21 @@ export const action = async ({ request }) => {
       return { ok: false, error: "No mapping data provided." };
     }
     try {
+      const parsed = JSON.parse(String(jsonStr));
+      if (!Array.isArray(parsed)) {
+        return { ok: false, error: "Invalid mapping data format." };
+      }
+      if (parsed.length > 100) {
+        return { ok: false, error: "You cannot map more than 100 fields." };
+      }
+      for (const m of parsed) {
+        if (!m.clickupFieldId || !m.shopifySourceField) {
+          return { ok: false, error: "Invalid mapping configuration." };
+        }
+      }
       await prisma.clickUpConnection.update({
         where: { shopDomain: shop },
-        data: { fieldMappings: String(jsonStr) },
+        data: { fieldMappings: JSON.stringify(parsed) },
       });
       return { ok: true, savedMappings: true };
     } catch (e) {

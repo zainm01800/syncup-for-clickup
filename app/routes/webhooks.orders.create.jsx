@@ -265,8 +265,8 @@ export const action = async ({ request }) => {
       try {
         const mappings = JSON.parse(connection.fieldMappings);
         if (Array.isArray(mappings) && mappings.length > 0) {
-          // Process custom fields in parallel/background so it doesn't block the webhook response
-          Promise.all(
+          // Process custom fields in parallel/background and await to prevent serverless execution freeze
+          await Promise.all(
             mappings.map(async (mapping) => {
               try {
                 const rawValue = extractShopifyOrderFieldValue(
