@@ -8,10 +8,61 @@ import {
   withRetry,
   logActivity,
   scheduleRetry,
+  setCustomFieldValue,
+  formatFieldValueForClickUp,
 } from "../clickup.server";
 import { getOrCreateSubscription, isSubscriptionActive, incrementOrderCount } from "../billing.server";
 
 export const action = async ({ request }) => {
+  function extractShopifyOrderFieldValue(order, fieldId, customerName, orderNumber) {
+    switch (fieldId) {
+      case "order_number":
+        return orderNumber;
+      case "customer_name":
+        return customerName;
+      case "customer_email":
+        return order.customer?.email || order.email || "";
+      case "customer_phone":
+        return (
+          order.customer?.phone ||
+          order.billing_address?.phone ||
+          order.shipping_address?.phone ||
+          ""
+        );
+      case "total_price":
+        return order.total_price || "0.00";
+      case "subtotal_price":
+        return order.subtotal_price || "0.00";
+      case "shipping_price": {
+        const shippingCost = order.shipping_lines?.reduce(
+          (sum, s) => sum + parseFloat(s.price || "0"),
+          0
+        );
+        return shippingCost !== undefined ? shippingCost.toFixed(2) : "0.00";
+      }
+      case "shipping_address": {
+        const addr = order.shipping_address;
+        if (!addr) return "";
+        return [
+          addr.address1,
+          addr.address2,
+          addr.city,
+          addr.province,
+          addr.zip,
+          addr.country,
+        ]
+          .filter(Boolean)
+          .join(", ");
+      }
+      case "order_notes":
+        return order.note || "";
+      case "created_at":
+        return order.created_at || "";
+      default:
+        return "";
+    }
+  }
+
   function buildTaskDescription(order, adminOrderUrl, customerName) {
     const lines = [];
 
@@ -207,6 +258,48 @@ export const action = async ({ request }) => {
     );
     await recordOrderTask(shop, String(order.id), task.id, "synced", orderNumber);
     await incrementOrderCount(shop);
+
+    // Custom Field Mapping Sync (Growth & Pro plans only)
+    const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
+    if (isGrowthOrPro && connection.fieldMappings) {
+      try {
+        const mappings = JSON.parse(connection.fieldMappings);
+        if (Array.isArray(mappings) && mappings.length > 0) {
+          // Process custom fields in parallel/background so it doesn't block the webhook response
+          Promise.all(
+            mappings.map(async (mapping) => {
+              try {
+                const rawValue = extractShopifyOrderFieldValue(
+                  order,
+                  mapping.shopifySourceField,
+                  customerName,
+                  orderNumber
+                );
+                const clickupValue = formatFieldValueForClickUp(rawValue, mapping.clickupFieldType);
+                if (clickupValue !== null && clickupValue !== undefined) {
+                  await setCustomFieldValue(
+                    connection.accessToken,
+                    task.id,
+                    mapping.clickupFieldId,
+                    clickupValue
+                  );
+                }
+              } catch (fieldErr) {
+                console.error(
+                  `Failed to sync custom field ${mapping.clickupFieldName} for order ${order.id}:`,
+                  fieldErr
+                );
+              }
+            })
+          ).catch((promiseErr) => {
+            console.error("Error in Custom Fields mapping promises:", promiseErr);
+          });
+        }
+      } catch (mappingParseErr) {
+        console.error("Failed to parse field mappings:", mappingParseErr);
+      }
+    }
+
     logActivity(
       shop,
       "order_synced",

@@ -477,3 +477,42 @@ export async function getRecentActivity(shop, limit = 5) {
   });
 }
 
+/** GET /list/{list_id}/field — get list custom fields. */
+export async function fetchListCustomFields(token, listId) {
+  const data = await clickupRequest(`/list/${listId}/field`, token);
+  return data.fields || [];
+}
+
+/** POST /task/{task_id}/field/{field_id} — set custom field value. */
+export async function setCustomFieldValue(token, taskId, fieldId, value) {
+  return clickupRequest(`/task/${taskId}/field/${fieldId}`, token, {
+    method: "POST",
+    body: JSON.stringify({ value }),
+  });
+}
+
+/** Formats raw Shopify values to ClickUp-safe Custom Field types. */
+export function formatFieldValueForClickUp(value, type) {
+  if (value === null || value === undefined) return null;
+  const stringVal = String(value).trim();
+  if (!stringVal) return null;
+
+  switch (type.toLowerCase()) {
+    case "number":
+    case "currency": {
+      const parsed = parseFloat(stringVal.replace(/[^0-9.-]/g, ""));
+      return isNaN(parsed) ? null : parsed;
+    }
+    case "date": {
+      const parsedDate = new Date(stringVal);
+      return isNaN(parsedDate.getTime()) ? null : parsedDate.getTime();
+    }
+    case "boolean":
+    case "checkbox": {
+      return stringVal === "true" || stringVal === "1" || value === true;
+    }
+    default:
+      return stringVal;
+  }
+}
+

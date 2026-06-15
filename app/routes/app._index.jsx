@@ -75,6 +75,27 @@ export const loader = async ({ request }) => {
   const plan = PLANS[subscription.planName] || (subscription.planName === "trial" ? { name: "Free Trial", listLimit: 5 } : { name: "Expired/Cancelled", listLimit: 1 });
   const listLimit = plan.listLimit || 1;
 
+  let clickupFields = [];
+  let fieldMappings = null;
+
+  if (connection?.accessToken) {
+    fieldMappings = connection.fieldMappings ? JSON.parse(connection.fieldMappings) : null;
+    if (connection.listId) {
+      const isGrowthOrPro =
+        subscription.planName.startsWith("growth") ||
+        subscription.planName.startsWith("pro") ||
+        subscription.planName === "trial";
+      if (isGrowthOrPro) {
+        try {
+          const { fetchListCustomFields } = await import("../clickup.server");
+          clickupFields = await fetchListCustomFields(connection.accessToken, connection.listId);
+        } catch (e) {
+          console.error("Failed to load list custom fields in loader:", e);
+        }
+      }
+    }
+  }
+
   return {
     shop,
     clickupConnectState: await signState(shop),
@@ -83,6 +104,8 @@ export const loader = async ({ request }) => {
     listConnections: connection?.listConnections || [],
     lists,
     listError,
+    clickupFields,
+    fieldMappings,
     subscription: {
       planName: subscription.planName,
       status: subscription.status,
@@ -160,6 +183,22 @@ export const action = async ({ request }) => {
     }
   }
 
+  if (intent === "save_field_mappings") {
+    const jsonStr = formData.get("fieldMappingsJson");
+    if (!jsonStr) {
+      return { ok: false, error: "No mapping data provided." };
+    }
+    try {
+      await prisma.clickUpConnection.update({
+        where: { shopDomain: shop },
+        data: { fieldMappings: String(jsonStr) },
+      });
+      return { ok: true, savedMappings: true };
+    } catch (e) {
+      return { ok: false, error: `Failed to save mappings: ${e.message}` };
+    }
+  }
+
   return { ok: false, error: "Unknown action." };
 };
 
@@ -171,6 +210,19 @@ const C = {
   muted: "#9a9a9a",
   accent: "#00c48c",
 };
+
+const SHOPIFY_SOURCE_FIELDS = [
+  { id: "order_number", label: "Order Number (e.g. #1001)", type: "string" },
+  { id: "customer_name", label: "Customer Name (e.g. John Doe)", type: "string" },
+  { id: "customer_email", label: "Customer Email", type: "email" },
+  { id: "customer_phone", label: "Customer Phone", type: "phone" },
+  { id: "total_price", label: "Order Total Price", type: "currency" },
+  { id: "subtotal_price", label: "Subtotal Price", type: "currency" },
+  { id: "shipping_price", label: "Shipping Cost", type: "currency" },
+  { id: "shipping_address", label: "Shipping Address", type: "string" },
+  { id: "order_notes", label: "Order Notes / Comments", type: "string" },
+  { id: "created_at", label: "Order Creation Date", type: "date" },
+];
 
 function timeAgo(isoString) {
   const seconds = Math.floor((Date.now() - new Date(isoString)) / 1000);
@@ -228,6 +280,8 @@ export default function Index() {
     listConnections,
     lists,
     listError,
+    clickupFields,
+    fieldMappings,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -251,6 +305,7 @@ export default function Index() {
   );
 
   const [billingInterval, setBillingInterval] = useState("monthly"); // monthly or annual
+  const [fieldMappingsList, setFieldMappingsList] = useState(fieldMappings || []);
 
   const statusCfg = SYNC_STATUS_CONFIG[syncStatus];
 
@@ -744,6 +799,187 @@ export default function Index() {
                       </button>
                     </Form>
                   )}
+                </section>
+              )}
+
+              {/* SECTION 3.5 — CLICKUP CUSTOM FIELD MAPPING */}
+              {connected && (
+                <section style={{ ...styles.card, marginTop: 16 }}>
+                  {(() => {
+                    const isTrial = subscription.planName === "trial";
+                    const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+                    const isMappingUnlocked = isGrowthOrPro || isTrial;
+
+                    if (!isMappingUnlocked) {
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                            ClickUp Custom Field Mapping
+                            <span style={{
+                              fontSize: 10,
+                              color: "#ff9900",
+                              background: "rgba(255,153,0,0.12)",
+                              border: "1px solid #ff990044",
+                              padding: "2px 8px",
+                              borderRadius: 12,
+                              fontWeight: 700,
+                              textTransform: "uppercase"
+                            }}>
+                              Locked
+                            </span>
+                          </h2>
+                          <p style={styles.cardText}>
+                            Map Shopify order attributes directly to your custom columns in ClickUp. This feature is available on the Growth & Pro plans.
+                          </p>
+                          <div style={{ marginTop: 8 }}>
+                            <Link
+                              to="/app/billing"
+                              className="inline-flex items-center justify-center bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2.5 rounded-xl text-xs font-black tracking-wide shadow-lg shadow-emerald-500/10 transition-all duration-200"
+                              style={{ textDecoration: "none", color: "#03251c" }}
+                            >
+                              Upgrade to Unlock Custom Mapping
+                            </Link>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Mapping unlocked (Trial, Growth, or Pro)
+                    const hasSelectedList = listConnections && listConnections.length > 0;
+                    if (!hasSelectedList) {
+                      return (
+                        <div>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>ClickUp Custom Field Mapping</h2>
+                          <p style={styles.cardText}>
+                            Please configure and save at least one ClickUp list connection above to begin mapping custom fields.
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+                          <div style={{ flex: 1, minWidth: "250px" }}>
+                            <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                              ClickUp Custom Field Mapping
+                              <span style={{
+                                fontSize: 10,
+                                color: C.accent,
+                                background: "rgba(0,196,140,0.12)",
+                                border: `1px solid ${C.accent}44`,
+                                padding: "2px 8px",
+                                borderRadius: 12,
+                                fontWeight: 700,
+                                textTransform: "uppercase"
+                              }}>
+                                Active
+                              </span>
+                            </h2>
+                            <p style={styles.cardText}>
+                              Map Shopify order attributes directly to custom columns inside your primary connected ClickUp list.
+                            </p>
+                          </div>
+                          
+                          <Form method="post">
+                            <input type="hidden" name="intent" value="save_field_mappings" />
+                            <input type="hidden" name="fieldMappingsJson" value={JSON.stringify(fieldMappingsList)} />
+                            <button
+                              type="submit"
+                              className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2 rounded-xl text-xs font-black tracking-wide transition-all duration-200 cursor-pointer shadow-lg shadow-emerald-500/10"
+                              disabled={isSubmitting}
+                              style={{ border: "none", color: "#03251c", outline: "none" }}
+                            >
+                              {isSubmitting ? "Saving..." : "Save field mappings"}
+                            </button>
+                          </Form>
+                        </div>
+
+                        {actionData?.savedMappings && (
+                          <div style={{ ...styles.successBanner, marginBottom: 16 }}>
+                            ✓ Field mappings saved successfully.
+                          </div>
+                        )}
+
+                        {clickupFields.length === 0 ? (
+                          <p style={styles.cardText}>
+                            No custom fields found in your connected ClickUp list. Create some custom fields in ClickUp first, then reload this page.
+                          </p>
+                        ) : (
+                          <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
+                            {/* Table Header */}
+                            <div className="grid grid-cols-12 bg-zinc-900/50 p-4 border-b border-zinc-800 font-semibold text-xs tracking-wider uppercase text-zinc-400">
+                              <div className="col-span-5">Shopify Source Field</div>
+                              <div className="col-span-2 text-center">Flow</div>
+                              <div className="col-span-5">ClickUp Custom Field (Destination)</div>
+                            </div>
+
+                            {/* Mappings */}
+                            <div className="divide-y divide-zinc-900/50">
+                              {clickupFields.map((field) => {
+                                const currentMapping = fieldMappingsList.find((m) => m.clickupFieldId === field.id);
+                                return (
+                                  <div key={field.id} className="grid grid-cols-12 items-center p-4 hover:bg-zinc-900/10 transition-colors">
+                                    {/* Shopify field selector */}
+                                    <div className="col-span-5">
+                                      <select
+                                        value={currentMapping?.shopifySourceField || ""}
+                                        onChange={(e) => {
+                                          const val = e.currentTarget.value;
+                                          // Update state
+                                          setFieldMappingsList((prev) => {
+                                            const filtered = prev.filter((m) => m.clickupFieldId !== field.id);
+                                            if (!val) return filtered;
+                                            return [
+                                              ...filtered,
+                                              {
+                                                shopifySourceField: val,
+                                                clickupFieldId: field.id,
+                                                clickupFieldName: field.name,
+                                                clickupFieldType: field.type,
+                                              },
+                                            ];
+                                          });
+                                        }}
+                                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                                      >
+                                        <option value="">-- Leave Unmapped --</option>
+                                        {SHOPIFY_SOURCE_FIELDS.map((src) => (
+                                          <option key={src.id} value={src.id}>
+                                            {src.label} ({src.type.toUpperCase()})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+
+                                    {/* Arrow icon */}
+                                    <div className="col-span-2 flex justify-center text-emerald-400">
+                                      <span style={{ fontSize: "14px", fontWeight: "bold" }}>&rarr;</span>
+                                    </div>
+
+                                    {/* ClickUp Custom Field read-only info */}
+                                    <div className="col-span-5 flex justify-between items-center pl-2">
+                                      <div>
+                                        <span className="font-semibold text-xs text-white">{field.name}</span>
+                                        <div className="flex gap-1.5 mt-1">
+                                          <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-zinc-900 text-zinc-400 border border-zinc-800">
+                                            {field.type}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="text-zinc-500 font-mono text-[10px] hidden sm:block">
+                                        {field.id.slice(0, 8)}...
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </section>
               )}
 
