@@ -137,6 +137,36 @@ export const action = async ({ request }) => {
       lines.push(`📝 Notes: ${order.note.trim()}`);
     }
 
+    // Scan line items for custom upload properties (art assets)
+    const assetLinks = [];
+    if (order.line_items?.length > 0) {
+      for (const item of order.line_items) {
+        if (Array.isArray(item.properties)) {
+          for (const prop of item.properties) {
+            const val = String(prop.value || "").trim();
+            const isUrl = val.startsWith("http://") || val.startsWith("https://");
+            const isFile = /\.(jpg|jpeg|png|gif|pdf|svg|webp|tiff|zip|ai|psd|eps|csv|txt)/i.test(val);
+            if (isUrl && isFile) {
+              assetLinks.push({
+                itemName: item.title,
+                propName: prop.name,
+                url: val
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (assetLinks.length > 0) {
+      lines.push("");
+      lines.push("🎨 Production Assets:");
+      for (const asset of assetLinks) {
+        lines.push(`  • ${asset.itemName} (${asset.propName}):`);
+        lines.push(`    🔗 ${asset.url}`);
+      }
+    }
+
     lines.push("");
     lines.push(`🔗 View order: ${adminOrderUrl}`);
 

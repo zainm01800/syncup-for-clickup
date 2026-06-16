@@ -211,6 +211,101 @@ export const action = async ({ request }) => {
     }
   }
 
+  if (intent === "send_test_task") {
+    try {
+      const connection = await getConnection(shop);
+      if (!connection?.accessToken || !connection.listId) {
+        return { ok: false, error: "Please configure and save a list connection first." };
+      }
+
+      const { createTask, setCustomFieldValue, formatFieldValueForClickUp } = await import("../clickup.server");
+
+      const mockOrderNumber = "9999-TEST";
+      const mockCustomerName = "Jane Doe";
+      const mockEmail = "jane.doe@example.com";
+      const mockPhone = "+1 555-0199";
+      const mockAddress = "123 Main St, Seattle, WA 98101, United States";
+      const mockNote = "Engrave initials 'J.D.' on cuff";
+      const mockCreatedAt = new Date().toISOString();
+
+      const mockTaskName = `Order #${mockOrderNumber} — ${mockCustomerName}`;
+      const mockDescription = `👤 Customer:
+   Name:  ${mockCustomerName}
+   Email: ${mockEmail}
+   Phone: ${mockPhone}
+
+📦 Items:
+  • 1x Custom Embroidered Hoodie [Hoodie-01]
+
+💰 Subtotal: USD 45.00
+🚚 Shipping: USD 5.00
+   Total:    USD 50.00
+✅ Payment: paid
+
+📍 Ship to: ${mockAddress}
+
+📝 Notes: ${mockNote}
+
+🔗 View order: https://admin.shopify.com/store/syncup-test-store/orders/test`;
+
+      const orderCreatedAt = Date.now();
+      const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+
+      const task = await createTask(connection.accessToken, connection.listId, {
+        name: mockTaskName,
+        description: mockDescription,
+        priority: 3, // normal
+        startDate: orderCreatedAt,
+        dueDate: orderCreatedAt + twoDaysMs,
+        tags: ["shopify-order", "test-sync"],
+      });
+
+      if (connection.fieldMappings) {
+        try {
+          const mappings = JSON.parse(connection.fieldMappings);
+          if (Array.isArray(mappings) && mappings.length > 0) {
+            const extractMockVal = (fieldId) => {
+              switch (fieldId) {
+                case "order_number": return mockOrderNumber;
+                case "customer_name": return mockCustomerName;
+                case "customer_email": return mockEmail;
+                case "customer_phone": return mockPhone;
+                case "total_price": return "50.00";
+                case "subtotal_price": return "45.00";
+                case "shipping_price": return "5.00";
+                case "shipping_address": return mockAddress;
+                case "order_notes": return mockNote;
+                case "created_at": return mockCreatedAt;
+                default: return "";
+              }
+            };
+
+            await Promise.all(
+              mappings.map(async (m) => {
+                try {
+                  const rawVal = extractMockVal(m.shopifySourceField);
+                  const clickupVal = formatFieldValueForClickUp(rawVal, m.clickupFieldType);
+                  if (clickupVal !== null && clickupVal !== undefined) {
+                    await setCustomFieldValue(connection.accessToken, task.id, m.clickupFieldId, clickupVal);
+                  }
+                } catch (e) {
+                  console.error(`Mock custom field sync failed for ${m.clickupFieldName}:`, e);
+                }
+              })
+            );
+          }
+        } catch (err) {
+          console.error("Failed to sync mock custom fields:", err);
+        }
+      }
+
+      logActivity(shop, "order_synced", `Sent test task (Order #${mockOrderNumber}) to ClickUp`);
+      return { ok: true, sentTestTask: true };
+    } catch (e) {
+      return { ok: false, error: `Failed to send test task: ${e.message}` };
+    }
+  }
+
   return { ok: false, error: "Unknown action." };
 };
 
@@ -452,6 +547,11 @@ export default function Index() {
           {billingSuccess && (
             <div style={{ ...styles.successBanner, marginBottom: 16 }}>
               ✓ Your plan has been updated successfully.
+            </div>
+          )}
+          {actionData?.sentTestTask && (
+            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
+              ✓ Test task successfully sent to ClickUp! Check your connected ClickUp list.
             </div>
           )}
           {removedLists && (
@@ -698,16 +798,30 @@ export default function Index() {
                           : "ClickUp connected"}
                       </span>
                     </div>
-                    <Form method="post" onSubmit={handleDisconnect}>
-                      <input type="hidden" name="intent" value="disconnect" />
-                      <button
-                        type="submit"
-                        style={styles.dangerButton}
-                        disabled={isSubmitting}
-                      >
-                        Disconnect
-                      </button>
-                    </Form>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="send_test_task" />
+                        <button
+                          type="submit"
+                          className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 cursor-pointer shadow shadow-emerald-500/10"
+                          disabled={isSubmitting}
+                          style={{ border: "none", color: "#03251c" }}
+                        >
+                          Send Test Task
+                        </button>
+                      </Form>
+
+                      <Form method="post" onSubmit={handleDisconnect}>
+                        <input type="hidden" name="intent" value="disconnect" />
+                        <button
+                          type="submit"
+                          style={styles.dangerButton}
+                          disabled={isSubmitting}
+                        >
+                          Disconnect
+                        </button>
+                      </Form>
+                    </div>
                   </div>
 
                   {actionData?.saved && (
@@ -910,6 +1024,12 @@ export default function Index() {
                         {actionData?.savedMappings && (
                           <div style={{ ...styles.successBanner, marginBottom: 16 }}>
                             ✓ Field mappings saved successfully.
+                          </div>
+                        )}
+
+                        {fieldMappingsList.length > 0 && (
+                          <div style={{ ...styles.warningBanner, marginBottom: 16, fontSize: "13px", lineHeight: "1.4" }}>
+                            <strong>⚠️ ClickUp Free Tier Notice:</strong> ClickUp Free Forever plans have a lifetime limit of 60 custom field uses. If your workspace is on the Free tier, updates to mapped fields will stop syncing once this limit is reached.
                           </div>
                         )}
 
