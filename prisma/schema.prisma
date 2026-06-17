@@ -40,6 +40,7 @@ model ClickUpConnection {
   listName        String?  @map("list_name")
   listConnections String?  @map("list_connections") // Serialized JSON array of { id, name, keyword }
   fieldMappings   String?  @map("field_mappings")    // Serialized JSON array of { shopifyField, clickupFieldId, clickupFieldType }
+  isFreePlan      Boolean  @default(false) @map("is_free_plan")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
@@ -94,3 +95,20 @@ model ActivityLog {
   @@index([shopDomain, createdAt(sort: Desc)])
   @@map("activity_log")
 }
+
+// Queue table for asynchronous order sync execution
+model SyncJob {
+  id             String   @id @default(uuid())
+  shopDomain     String   @map("shop_domain")
+  shopifyOrderId String   @map("shopify_order_id")
+  payload        String   // Serialized JSON of order details
+  status         String   @default("pending") // pending, processing, completed, failed
+  attempts       Int      @default(0)
+  lastError      String?  @map("last_error")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("sync_jobs")
+}
+

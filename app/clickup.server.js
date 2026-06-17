@@ -226,9 +226,9 @@ export async function getConnection(shop) {
   return { ...conn, accessToken, listConnections };
 }
 
-export async function saveToken(shop, accessToken, workspaceName = null) {
+export async function saveToken(shop, accessToken, workspaceName = null, isFreePlan = false) {
   const encryptedToken = await encryptToken(accessToken);
-  const data = { accessToken: encryptedToken };
+  const data = { accessToken: encryptedToken, isFreePlan };
   if (workspaceName) data.workspaceName = workspaceName;
   return prisma.clickUpConnection.upsert({
     where: { shopDomain: shop },
@@ -514,5 +514,118 @@ export function formatFieldValueForClickUp(value, type) {
     default:
       return stringVal;
   }
+}
+
+/** Formats mapped Shopify attributes into a clean Markdown table. */
+export function compileMarkdownTable(order, mappings, customerName, orderNumber) {
+  const tableLines = [];
+  tableLines.push("");
+  tableLines.push("📋 Mapped Order Columns:");
+  tableLines.push("| ClickUp Column | Value |");
+  tableLines.push("| :--- | :--- |");
+  
+  const extractVal = (fieldId) => {
+    switch (fieldId) {
+      case "order_number":
+        return orderNumber;
+      case "customer_name":
+        return customerName;
+      case "customer_email":
+        return order.customer?.email || order.email || "";
+      case "customer_phone":
+        return (
+          order.customer?.phone ||
+          order.billing_address?.phone ||
+          order.shipping_address?.phone ||
+          ""
+        );
+      case "total_price":
+        return order.total_price || "0.00";
+      case "subtotal_price":
+        return order.subtotal_price || "0.00";
+      case "shipping_price": {
+        const shippingCost = order.shipping_lines?.reduce(
+          (sum, s) => sum + parseFloat(s.price || "0"),
+          0
+        );
+        return shippingCost !== undefined ? shippingCost.toFixed(2) : "0.00";
+      }
+      case "shipping_address": {
+        const addr = order.shipping_address;
+        if (!addr) return "";
+        return [
+          addr.address1,
+          addr.address2,
+          addr.city,
+          addr.province,
+          addr.zip,
+          addr.country,
+        ]
+          .filter(Boolean)
+          .join(", ");
+      }
+      case "order_notes":
+        return order.note || "";
+      case "created_at":
+        return order.created_at || "";
+      default:
+        return "";
+    }
+  };
+
+  for (const m of mappings) {
+    const rawVal = extractVal(m.shopifySourceField);
+    if (rawVal) {
+      tableLines.push(`| **${m.clickupFieldName}** | ${rawVal} |`);
+    }
+  }
+
+  return tableLines.join("\n");
+}
+
+/** Queries ClickUp to fetch the active workspace plan name. */
+export async function fetchWorkspacePlan(token) {
+  try {
+    const response = await fetch("https://api.clickup.com/api/v2/team", {
+      headers: { Authorization: token }
+    });
+    if (!response.ok) return "free";
+    const data = await response.json();
+    const primaryTeam = data.teams?.[0] || null;
+    if (primaryTeam) {
+      const planVal = primaryTeam.plan;
+      const planStr = typeof planVal === "object" && planVal !== null ? planVal.name : planVal;
+      return (planStr || "free").toLowerCase();
+    }
+    return "free";
+  } catch (err) {
+    console.error("Failed to fetch ClickUp workspace plan:", err);
+    return "free";
+  }
+}
+
+/** Uploads a file via multipart form-data to a ClickUp task's attachments. */
+export async function uploadTaskAttachment(token, taskId, fileUrl, filename) {
+  const response = await fetch(fileUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to download design file: ${response.statusText}`);
+  }
+  const blob = await response.blob();
+
+  const formData = new FormData();
+  formData.append("attachment", blob, filename);
+
+  const res = await fetch(`https://api.clickup.com/api/v2/task/${taskId}/attachment`, {
+    method: "POST",
+    headers: { Authorization: token },
+    body: formData
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`ClickUp upload failed (${res.status}): ${body}`);
+  }
+
+  return res.json();
 }
 

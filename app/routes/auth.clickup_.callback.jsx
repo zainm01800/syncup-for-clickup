@@ -52,16 +52,25 @@ export const loader = async ({ request }) => {
     return redirect(`${appUrl}?clickup_error=${msg}`);
   }
 
-  // Fetch workspace name — non-fatal if it errors
+  // Fetch workspace details and plan type — non-fatal if it errors
   let workspaceName = null;
+  let isFreePlan = false;
   try {
     const teams = await getTeams(accessToken);
-    workspaceName = teams[0]?.name || null;
+    const primaryTeam = teams[0] || null;
+    if (primaryTeam) {
+      workspaceName = primaryTeam.name || null;
+      const planVal = primaryTeam.plan;
+      const planStr = typeof planVal === "object" && planVal !== null ? planVal.name : planVal;
+      if (planStr && String(planStr).toLowerCase().includes("free")) {
+        isFreePlan = true;
+      }
+    }
   } catch (e) {
-    console.error("Could not fetch ClickUp workspace name:", e);
+    console.error("Could not fetch ClickUp workspace metadata:", e);
   }
 
-  await saveToken(shop, accessToken, workspaceName);
+  await saveToken(shop, accessToken, workspaceName, isFreePlan);
   logActivity(shop, "clickup_connected", `Connected to ClickUp${workspaceName ? ` (${workspaceName})` : ""}`);
 
   return redirect(appUrl);
