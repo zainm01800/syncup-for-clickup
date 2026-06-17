@@ -12,7 +12,7 @@ import {
 } from "../clickup.server";
 import { getOrCreateSubscription, getTrialBannerStatus, isSubscriptionActive } from "../billing.server";
 import { signState } from "../oauth-state.server";
-import { PLANS } from "../plans";
+import { PLANS, getTranslatedFeatures } from "../plans";
 import prisma from "../db.server";
 
 export const loader = async ({ request }) => {
@@ -101,6 +101,7 @@ export const loader = async ({ request }) => {
     email: session.email || null,
     clickupConnectState: await signState(shop),
     connected: Boolean(connection?.accessToken),
+    selectedPlatform: connection?.selectedPlatform || "clickup",
     workspaceName: connection?.workspaceName || null,
     listConnections: connection?.listConnections || [],
     lists,
@@ -398,6 +399,7 @@ export default function Index() {
     email,
     clickupConnectState,
     connected,
+    selectedPlatform,
     workspaceName,
     listConnections,
     lists,
@@ -786,7 +788,7 @@ export default function Index() {
 
                         {/* Features */}
                         <ul className="space-y-3 mb-6 text-xs text-zinc-300">
-                          {plan.features.map((feat) => (
+                          {getTranslatedFeatures(plan.features, selectedPlatform).map((feat) => (
                             <li key={feat} className="flex items-start">
                               <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
                               <span className="leading-snug">{feat}</span>
@@ -796,7 +798,7 @@ export default function Index() {
                       </div>
 
                       {/* Submit action */}
-                      <Form method="post" action="/app/billing" target="_top" className="mt-auto">
+                      <Form method="post" action={`/app/billing?platform=${selectedPlatform}`} target="_top" className="mt-auto">
                         <input type="hidden" name="intent" value="upgrade" />
                         <input type="hidden" name="plan" value={planKey} />
                         <button
@@ -840,7 +842,7 @@ export default function Index() {
                     )}
                   </div>
                   <Link
-                    to="/app/billing"
+                    to={`/app/billing?platform=${selectedPlatform}`}
                     style={styles.managePlanButton}
                     className="su-plan-btn"
                   >
@@ -1162,7 +1164,7 @@ export default function Index() {
                           </p>
                           <div style={{ marginTop: 8 }}>
                             <Link
-                              to="/app/billing"
+                              to={`/app/billing?platform=${selectedPlatform}`}
                               className="inline-flex items-center justify-center bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2.5 rounded-xl text-xs font-black tracking-wide shadow-lg shadow-emerald-500/10 transition-all duration-200"
                               style={{ textDecoration: "none", color: "#03251c" }}
                             >
@@ -1413,7 +1415,7 @@ export default function Index() {
                         <div style={styles.lockText}>
                           Upgrade to the Growth plan to unlock sync analytics, up to 5 list connections, priority support, and automatic webhook retries.
                         </div>
-                        <Link to="/app/billing" style={styles.upgradeInlineButton}>
+                        <Link to={`/app/billing?platform=${selectedPlatform}`} style={styles.upgradeInlineButton}>
                           Upgrade to Growth
                         </Link>
                       </div>

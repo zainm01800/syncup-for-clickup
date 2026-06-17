@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLoaderData, useActionData, useNavigation, Form, redirect, Link } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { PLANS } from "../plans";
+import { PLANS, getTranslatedFeatures } from "../plans";
 import {
   getOrCreateSubscription,
   createShopifySubscription,
@@ -64,7 +64,11 @@ export const loader = async ({ request }) => {
     }
   }
 
-  return { subscription };
+  const { getConnection } = await import("../clickup.server");
+  const connection = await getConnection(shop);
+  const selectedPlatform = url.searchParams.get("platform") || connection?.selectedPlatform || "clickup";
+
+  return { subscription, selectedPlatform };
 };
 
 export const action = async ({ request }) => {
@@ -104,7 +108,7 @@ export const action = async ({ request }) => {
 };
 
 export default function BillingPage() {
-  const { subscription } = useLoaderData();
+  const { subscription, selectedPlatform } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -311,7 +315,7 @@ export default function BillingPage() {
 
                   {/* Features */}
                   <ul className="space-y-3 mb-8 text-xs sm:text-sm text-zinc-300">
-                    {plan.features.map((feat) => (
+                    {getTranslatedFeatures(plan.features, selectedPlatform).map((feat) => (
                       <li key={feat} className="flex items-start">
                         <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
                         <span className="leading-snug">{feat}</span>

@@ -120,3 +120,28 @@ export const PLANS = {
     ],
   },
 };
+
+export function getTranslatedFeatures(features, platform = "clickup") {
+  if (!platform) platform = "clickup";
+  const p = platform.toLowerCase();
+  
+  return features.map((feat) => {
+    let result = feat;
+    if (p === "monday") {
+      result = result
+        .replace(/ClickUp lists/g, "Monday boards")
+        .replace(/ClickUp list/g, "Monday board")
+        .replace(/ClickUp Custom Field Mapping/g, "Monday Column Mapping")
+        .replace(/ClickUp custom field/g, "Monday column")
+        .replace(/ClickUp/g, "Monday.com");
+    } else if (p === "notion") {
+      result = result
+        .replace(/ClickUp lists/g, "Notion databases")
+        .replace(/ClickUp list/g, "Notion database")
+        .replace(/ClickUp Custom Field Mapping/g, "Notion Property Mapping")
+        .replace(/ClickUp custom field/g, "Notion property")
+        .replace(/ClickUp/g, "Notion");
+    }
+    return result;
+  });
+}
