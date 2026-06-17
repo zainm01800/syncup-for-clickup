@@ -9,7 +9,7 @@ export const action = async ({ request }) => {
   const orderIds = (payload?.orders_to_redact || []).map(String);
 
   if (orderIds.length > 0) {
-    await prisma.orderTask.deleteMany({
+    await prisma.orderSyncRecord.deleteMany({
       where: {
         shopDomain: shop,
         shopifyOrderId: { in: orderIds },

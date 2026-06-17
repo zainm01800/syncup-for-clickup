@@ -6,8 +6,8 @@ export const action = async ({ request }) => {
   const { shop } = await authenticate.webhook(request);
 
   await Promise.all([
-    prisma.orderTask.deleteMany({ where: { shopDomain: shop } }),
-    prisma.clickUpConnection.deleteMany({ where: { shopDomain: shop } }),
+    prisma.orderSyncRecord.deleteMany({ where: { shopDomain: shop } }),
+    prisma.platformConnection.deleteMany({ where: { shopDomain: shop } }),
     prisma.subscription.deleteMany({ where: { shopDomain: shop } }),
     prisma.activityLog.deleteMany({ where: { shopDomain: shop } }),
     prisma.session.deleteMany({ where: { shop: shop } }),

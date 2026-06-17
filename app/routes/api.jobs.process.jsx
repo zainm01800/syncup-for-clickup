@@ -1,5 +1,4 @@
-// Helper function to sleep/delay execution
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/* global process */
 
 export const loader = async ({ request }) => {
   return handleJobProcess(request);
@@ -15,20 +14,17 @@ async function handleJobProcess(request) {
     { default: prisma },
     {
       getConnection,
-      createTask,
-      recordOrderTask,
       fetchShopifyCustomer,
       logActivity,
-      setCustomFieldValue,
-      formatFieldValueForClickUp,
       compileMarkdownTable,
-      uploadTaskAttachment,
     },
-    { getOrCreateSubscription, isSubscriptionActive, incrementOrderCount }
+    { getOrCreateSubscription, isSubscriptionActive, incrementOrderCount },
+    { ClickUpAdapter, MondayAdapter, NotionAdapter }
   ] = await Promise.all([
     import("../db.server"),
     import("../clickup.server"),
-    import("../billing.server")
+    import("../billing.server"),
+    import("../adapters/core.js")
   ]);
 
   // Validate authorization
@@ -71,7 +67,7 @@ async function handleJobProcess(request) {
 
     try {
       const payload = JSON.parse(job.payload);
-      const { shopDomain, shopifyOrderId } = job;
+      const { shopDomain } = job;
       
       const subscription = await getOrCreateSubscription(shopDomain);
       if (!isSubscriptionActive(subscription)) {
@@ -275,92 +271,102 @@ async function handleJobProcess(request) {
       const orderCreatedAt = order.created_at ? new Date(order.created_at).getTime() : Date.now();
       const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
 
-      // ClickUp Task Creation
-      const task = await createTask(connection.accessToken, targetListId, {
+      // Compile subtask names
+      const subtaskNames = [];
+      if (order.line_items?.length > 0) {
+        for (const item of order.line_items) {
+          const subtaskName = `${item.quantity}x ${item.title}${item.variant_title ? ` (${item.variant_title})` : ""}`;
+          subtaskNames.push(subtaskName);
+        }
+      }
+
+      // Compile attachment assets (Growth & Pro plans only)
+      const attachmentAssets = [];
+      const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
+      if (isGrowthOrPro && assetLinks.length > 0) {
+        for (const asset of assetLinks) {
+          const urlParts = asset.url.split("/");
+          let filename = urlParts[urlParts.length - 1].split("?")[0] || "design_file.pdf";
+          filename = `${asset.itemName.replace(/[^a-zA-Z0-9.-]/g, "_")}_${filename}`;
+          attachmentAssets.push({ url: asset.url, filename });
+        }
+      }
+
+      // Instantiate correct platform adapter
+      let adapter;
+      const platform = connection.selectedPlatform || "clickup";
+      if (platform === "clickup") {
+        adapter = new ClickUpAdapter(connection.accessToken);
+      } else if (platform === "monday") {
+        adapter = new MondayAdapter(connection.accessToken);
+      } else if (platform === "notion") {
+        adapter = new NotionAdapter(connection.accessToken);
+      }
+
+      if (!adapter) {
+        throw new Error(`Unsupported selectedPlatform integration: ${platform}`);
+      }
+
+      // Sync record creation through adapter (custom mappings are formatted inside the adapter)
+      const targetRecordId = await adapter.createRecord(targetListId, {
         name: taskName,
         description,
         priority: 3,
         startDate: orderCreatedAt,
         dueDate: orderCreatedAt + twoDaysMs,
         tags: ["shopify-order"],
+        rawOrder: order,
+        customerName,
+        shippingCost,
+        fieldMappings: connection.fieldMappings,
+        isFreePlan: connection.isFreePlan,
+        subtasks: subtaskNames,
+        attachments: attachmentAssets
       });
 
-      // Record in order task DB
-      await recordOrderTask(shopDomain, String(order.id), task.id, "synced", orderNumber);
-
-      // Upload production design files as task attachments (Growth & Pro plans only)
-      const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
-      if (isGrowthOrPro && assetLinks.length > 0) {
-        for (const asset of assetLinks) {
-          try {
-            const urlParts = asset.url.split("/");
-            let filename = urlParts[urlParts.length - 1].split("?")[0] || "design_file.pdf";
-            filename = `${asset.itemName.replace(/[^a-zA-Z0-9.-]/g, "_")}_${filename}`;
-            await uploadTaskAttachment(connection.accessToken, task.id, asset.url, filename);
-            await sleep(800); // Enforce rate limit delay
-          } catch (uploadErr) {
-            console.error(`Failed to upload attachment ${asset.url}:`, uploadErr);
-          }
-        }
-      }
-
-      // Create separate subtasks for each line item (bundle component) in ClickUp
-      if (order.line_items?.length > 0) {
-        for (const item of order.line_items) {
-          try {
-            const subtaskName = `${item.quantity}x ${item.title}${item.variant_title ? ` (${item.variant_title})` : ""}`;
-            await createTask(connection.accessToken, targetListId, {
-              name: subtaskName,
-              parent: task.id,
-              priority: 3,
-            });
-            await sleep(800); // Enforce rate limit delay
-          } catch (subtaskErr) {
-            console.error(`Failed to create subtask for item ${item.title}:`, subtaskErr);
-          }
-        }
-      }
-
-      // Custom Field Mapping (If Paid Plan and not ClickUp Free Plan)
-      if (isGrowthOrPro && connection.fieldMappings && !connection.isFreePlan) {
-        try {
-          const mappings = JSON.parse(connection.fieldMappings);
-          if (Array.isArray(mappings) && mappings.length > 0) {
-            for (const mapping of mappings) {
-              try {
-                const rawValue = extractShopifyOrderFieldValue(
-                  order,
-                  mapping.shopifySourceField,
-                  customerName,
-                  orderNumber
-                );
-                const clickupValue = formatFieldValueForClickUp(rawValue, mapping.clickupFieldType);
-                if (clickupValue !== null && clickupValue !== undefined) {
-                  await setCustomFieldValue(
-                    connection.accessToken,
-                    task.id,
-                    mapping.clickupFieldId,
-                    clickupValue
-                  );
-                  // Token-Bucket Delay to stay under rate limits
-                  await sleep(800);
-                }
-              } catch (fieldErr) {
-                console.error(`Field sync error:`, fieldErr);
+      // Record in polymorphic OrderSyncRecord DB
+      try {
+        const activeConn = await prisma.platformConnection.findFirst({
+          where: { shopDomain, isActive: true }
+        });
+        if (activeConn) {
+          const syncTarget = await prisma.syncTarget.upsert({
+            where: {
+              connectionId_targetResourceId: {
+                connectionId: activeConn.id,
+                targetResourceId: targetListId
               }
+            },
+            update: {},
+            create: {
+              connectionId: activeConn.id,
+              targetResourceId: targetListId,
+              targetResourceName: targetListName || "Active Target"
             }
-          }
-        } catch (mappingParseErr) {
-          console.error("Failed to parse field mappings:", mappingParseErr);
+          });
+
+          await prisma.orderSyncRecord.create({
+            data: {
+              shopDomain,
+              shopifyOrderId: String(order.id),
+              syncTargetId: syncTarget.id,
+              targetRecordId: targetRecordId,
+              syncStatus: "synced",
+              orderNumber: orderNumber
+            }
+          });
+          await incrementOrderCount(shopDomain);
         }
+      } catch (dbErr) {
+        console.error("Polymorphic OrderSyncRecord write failed:", dbErr);
       }
 
       logActivity(
         shopDomain,
         "order_synced",
-        `Order #${orderNumber} (${customerName}) synced to ClickUp`,
+        `Order #${orderNumber} (${customerName}) synced to ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}`,
         String(order.id),
-        task.id
+        targetRecordId
       );
 
       // Complete job
@@ -388,51 +394,4 @@ async function handleJobProcess(request) {
   return Response.json({ ok: true, processed: jobs.length, results });
 }
 
-function extractShopifyOrderFieldValue(order, fieldId, customerName, orderNumber) {
-  switch (fieldId) {
-    case "order_number":
-      return orderNumber;
-    case "customer_name":
-      return customerName;
-    case "customer_email":
-      return order.customer?.email || order.email || "";
-    case "customer_phone":
-      return (
-        order.customer?.phone ||
-        order.billing_address?.phone ||
-        order.shipping_address?.phone ||
-        ""
-      );
-    case "total_price":
-      return order.total_price || "0.00";
-    case "subtotal_price":
-      return order.subtotal_price || "0.00";
-    case "shipping_price": {
-      const shippingCost = order.shipping_lines?.reduce(
-        (sum, s) => sum + parseFloat(s.price || "0"),
-        0
-      );
-      return shippingCost !== undefined ? shippingCost.toFixed(2) : "0.00";
-    }
-    case "shipping_address": {
-      const addr = order.shipping_address;
-      if (!addr) return "";
-      return [
-        addr.address1,
-        addr.address2,
-        addr.city,
-        addr.province,
-        addr.zip,
-        addr.country,
-      ]
-        .filter(Boolean)
-        .join(", ");
-    }
-    case "order_notes":
-      return order.note || "";
-    case "created_at":
-      return order.created_at || "";
-    default:
-      return "";
-  }
-}
+

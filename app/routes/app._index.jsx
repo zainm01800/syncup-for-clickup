@@ -2,14 +2,6 @@ import { useState } from "react";
 import { Form, useLoaderData, useActionData, useNavigation, Link } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, registerWebhooks } from "../shopify.server";
-import {
-  getConnection,
-  getAllLists,
-  saveListConnections,
-  disconnect,
-  getRecentActivity,
-  logActivity,
-} from "../clickup.server";
 import { getOrCreateSubscription, getTrialBannerStatus, isSubscriptionActive } from "../billing.server";
 import { signState } from "../oauth-state.server";
 import { PLANS, getTranslatedFeatures } from "../plans";
@@ -25,6 +17,8 @@ export const loader = async ({ request }) => {
     console.error("registerWebhooks error:", e);
   }
 
+  const { getConnection, getRecentActivity } = await import("../clickup.server");
+
   const [connection, subscription, recentActivity] = await Promise.all([
     getConnection(shop),
     getOrCreateSubscription(shop),
@@ -36,10 +30,12 @@ export const loader = async ({ request }) => {
 
   if (connection?.accessToken) {
     try {
-      lists = await getAllLists(connection.accessToken);
+      const { IntegrationFactory } = await import("../adapters/factory");
+      const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
+      lists = await adapter.fetchTargets();
     } catch (error) {
-      console.error(`Failed to load ClickUp lists for ${shop}:`, error);
-      listError = "We couldn't load your ClickUp lists. Try disconnecting and reconnecting.";
+      console.error(`Failed to load targets for ${shop}:`, error);
+      listError = `We couldn't load your resources from ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}. Try disconnecting and reconnecting.`;
     }
   }
 
@@ -56,17 +52,16 @@ export const loader = async ({ request }) => {
     syncStatus = isTrialOrSubscriptionActive ? "active" : "paused";
   }
 
-  const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
   const totalSyncedMonth = subscription.ordersSyncedThisMonth || 0;
   const totalSyncedAllTime = subscription.ordersSyncedAllTime || 0;
 
-  const totalTasks = await prisma.orderTask.count({ where: { shopDomain: shop } });
-  const failedTasks = await prisma.orderTask.count({
-    where: { shopDomain: shop, status: "failed" },
+  const totalTasks = await prisma.orderSyncRecord.count({ where: { shopDomain: shop } });
+  const failedTasks = await prisma.orderSyncRecord.count({
+    where: { shopDomain: shop, syncStatus: "failed" },
   });
   const successRate = totalTasks === 0 ? 100 : Math.round(((totalTasks - failedTasks) / totalTasks) * 100);
 
-  const recentTasks = await prisma.orderTask.findMany({
+  const recentTasks = await prisma.orderSyncRecord.findMany({
     where: { shopDomain: shop },
     orderBy: { createdAt: "desc" },
     take: 10,
@@ -87,10 +82,11 @@ export const loader = async ({ request }) => {
         subscription.planName === "trial";
       if (isGrowthOrPro) {
         try {
-          const { fetchListCustomFields } = await import("../clickup.server");
-          clickupFields = await fetchListCustomFields(connection.accessToken, connection.listId);
+          const { IntegrationFactory } = await import("../adapters/factory");
+          const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
+          clickupFields = await adapter.fetchFields(connection.listId);
         } catch (e) {
-          console.error("Failed to load list custom fields in loader:", e);
+          console.error("Failed to load destination fields in loader:", e);
         }
       }
     }
@@ -129,7 +125,7 @@ export const loader = async ({ request }) => {
         id: t.id,
         shopifyOrderId: t.shopifyOrderId,
         orderNumber: t.orderNumber || `#${t.shopifyOrderId}`,
-        status: t.status,
+        status: t.syncStatus,
         createdAt: t.createdAt.toISOString(),
       })),
     },
@@ -148,6 +144,8 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
+  const { getConnection, disconnect, logActivity, saveListConnections } = await import("../clickup.server");
+
   if (intent === "join_waitlist") {
     const platform = formData.get("platform");
     const waitlistEmail = formData.get("email") || "";
@@ -162,8 +160,10 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "disconnect") {
+    const connection = await getConnection(shop);
+    const platformName = connection?.selectedPlatform === "clickup" ? "ClickUp" : connection?.selectedPlatform === "monday" ? "Monday.com" : "Notion";
     await disconnect(shop);
-    logActivity(shop, "clickup_disconnected", "ClickUp account disconnected");
+    logActivity(shop, "clickup_disconnected", `${platformName} account disconnected`);
     return { ok: true, disconnected: true };
   }
 
@@ -198,6 +198,84 @@ export const action = async ({ request }) => {
     }
   }
 
+  if (intent === "connect_platform") {
+    const platform = formData.get("platform");
+    const token = formData.get("token");
+    if (!token) {
+      return { ok: false, error: "API token is required." };
+    }
+
+    try {
+      const { IntegrationFactory } = await import("../adapters/factory");
+      const adapter = await IntegrationFactory.getAdapter(platform, token);
+      const connected = await adapter.testConnection();
+      if (!connected) {
+        return { ok: false, error: "Failed to verify connection. Please check your token." };
+      }
+
+      const { encryptToken } = await import("../crypto.server");
+      const encryptedToken = await encryptToken(token);
+
+      // Deactivate any other active provider connection
+      const activeConnections = await prisma.platformConnection.findMany({
+        where: { shopDomain: shop, isActive: true }
+      });
+      for (const oldConn of activeConnections) {
+        if (oldConn.provider !== platform.toUpperCase()) {
+          await prisma.syncTarget.updateMany({
+            where: { connectionId: oldConn.id },
+            data: { isActive: false }
+          });
+          await prisma.platformConnection.update({
+            where: { id: oldConn.id },
+            data: { isActive: false }
+          });
+        }
+      }
+
+      // Upsert new connection
+      const conn = await prisma.platformConnection.upsert({
+        where: {
+          shopDomain_provider: {
+            shopDomain: shop,
+            provider: platform.toUpperCase()
+          }
+        },
+        update: {
+          encryptedAccessToken: encryptedToken,
+          isActive: true
+        },
+        create: {
+          shopDomain: shop,
+          provider: platform.toUpperCase(),
+          encryptedAccessToken: encryptedToken,
+          isActive: true
+        }
+      });
+
+      // Upsert metadata
+      if (platform === "monday") {
+        await prisma.mondayMetadata.upsert({
+          where: { connectionId: conn.id },
+          update: { workspaceId: "monday_default", fieldMappings: "[]" },
+          create: { connectionId: conn.id, workspaceId: "monday_default", fieldMappings: "[]" }
+        });
+      } else if (platform === "notion") {
+        await prisma.notionMetadata.upsert({
+          where: { connectionId: conn.id },
+          update: { workspaceId: "notion_default", fieldMappings: "[]" },
+          create: { connectionId: conn.id, workspaceId: "notion_default", fieldMappings: "[]" }
+        });
+      }
+
+      logActivity(shop, "clickup_connected", `${platform === "monday" ? "Monday.com" : "Notion"} connected successfully`);
+      return { ok: true, connectedPlatform: platform };
+    } catch (err) {
+      console.error(`Failed to connect ${platform}:`, err);
+      return { ok: false, error: `Connection failed: ${err.message}` };
+    }
+  }
+
   if (intent === "save_field_mappings") {
     const jsonStr = formData.get("fieldMappingsJson");
     if (!jsonStr) {
@@ -216,10 +294,31 @@ export const action = async ({ request }) => {
           return { ok: false, error: "Invalid mapping configuration." };
         }
       }
-      await prisma.clickUpConnection.update({
-        where: { shopDomain: shop },
-        data: { fieldMappings: JSON.stringify(parsed) },
+
+      const activeConn = await prisma.platformConnection.findFirst({
+        where: { shopDomain: shop, isActive: true }
       });
+      if (!activeConn) {
+        return { ok: false, error: "No active connection found." };
+      }
+
+      if (activeConn.provider === "CLICKUP") {
+        await prisma.clickUpMetadata.update({
+          where: { connectionId: activeConn.id },
+          data: { fieldMappings: JSON.stringify(parsed) },
+        });
+      } else if (activeConn.provider === "MONDAY") {
+        await prisma.mondayMetadata.update({
+          where: { connectionId: activeConn.id },
+          data: { fieldMappings: JSON.stringify(parsed) },
+        });
+      } else if (activeConn.provider === "NOTION") {
+        await prisma.notionMetadata.update({
+          where: { connectionId: activeConn.id },
+          data: { fieldMappings: JSON.stringify(parsed) },
+        });
+      }
+
       return { ok: true, savedMappings: true };
     } catch (e) {
       return { ok: false, error: `Failed to save mappings: ${e.message}` };
@@ -230,10 +329,11 @@ export const action = async ({ request }) => {
     try {
       const connection = await getConnection(shop);
       if (!connection?.accessToken || !connection.listId) {
-        return { ok: false, error: "Please configure and save a list connection first." };
+        return { ok: false, error: "Please configure and save a target connection first." };
       }
 
-      const { createTask, setCustomFieldValue, formatFieldValueForClickUp } = await import("../clickup.server");
+      const { IntegrationFactory } = await import("../adapters/factory");
+      const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
 
       const mockOrderNumber = "9999-TEST";
       const mockCustomerName = "Jane Doe";
@@ -249,72 +349,50 @@ export const action = async ({ request }) => {
    Email: ${mockEmail}
    Phone: ${mockPhone}
 
-📦 Items:
-  • 1x Custom Embroidered Hoodie [Hoodie-01]
+ 📦 Items:
+   • 1x Custom Embroidered Hoodie [Hoodie-01]
 
-💰 Subtotal: USD 45.00
-🚚 Shipping: USD 5.00
-   Total:    USD 50.00
-✅ Payment: paid
+ 💰 Subtotal: USD 45.00
+ 🚚 Shipping: USD 5.00
+    Total:    USD 50.00
+ ✅ Payment: paid
 
-📍 Ship to: ${mockAddress}
+ 📍 Ship to: ${mockAddress}
 
-📝 Notes: ${mockNote}
+ 📝 Notes: ${mockNote}
 
-🔗 View order: https://admin.shopify.com/store/syncup-test-store/orders/test`;
+ 🔗 View order: https://admin.shopify.com/store/syncup-test-store/orders/test`;
 
       const orderCreatedAt = Date.now();
       const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
 
-      const task = await createTask(connection.accessToken, connection.listId, {
+      await adapter.createRecord(connection.listId, {
         name: mockTaskName,
         description: mockDescription,
-        priority: 3, // normal
+        priority: 3,
         startDate: orderCreatedAt,
         dueDate: orderCreatedAt + twoDaysMs,
         tags: ["shopify-order", "test-sync"],
+        rawOrder: {
+          id: "9999-TEST",
+          order_number: mockOrderNumber,
+          customer: { first_name: "Jane", last_name: "Doe", email: mockEmail, phone: mockPhone },
+          total_price: "50.00",
+          subtotal_price: "45.00",
+          shipping_lines: [{ price: "5.00" }],
+          shipping_address: { address1: "123 Main St", city: "Seattle", province: "WA", zip: "98101", country: "United States" },
+          note: mockNote,
+          created_at: mockCreatedAt
+        },
+        customerName: mockCustomerName,
+        shippingCost: "5.00",
+        fieldMappings: connection.fieldMappings,
+        isFreePlan: connection.isFreePlan,
+        subtasks: ["1x Custom Embroidered Hoodie"],
+        attachments: []
       });
 
-      if (connection.fieldMappings) {
-        try {
-          const mappings = JSON.parse(connection.fieldMappings);
-          if (Array.isArray(mappings) && mappings.length > 0) {
-            const extractMockVal = (fieldId) => {
-              switch (fieldId) {
-                case "order_number": return mockOrderNumber;
-                case "customer_name": return mockCustomerName;
-                case "customer_email": return mockEmail;
-                case "customer_phone": return mockPhone;
-                case "total_price": return "50.00";
-                case "subtotal_price": return "45.00";
-                case "shipping_price": return "5.00";
-                case "shipping_address": return mockAddress;
-                case "order_notes": return mockNote;
-                case "created_at": return mockCreatedAt;
-                default: return "";
-              }
-            };
-
-            await Promise.all(
-              mappings.map(async (m) => {
-                try {
-                  const rawVal = extractMockVal(m.shopifySourceField);
-                  const clickupVal = formatFieldValueForClickUp(rawVal, m.clickupFieldType);
-                  if (clickupVal !== null && clickupVal !== undefined) {
-                    await setCustomFieldValue(connection.accessToken, task.id, m.clickupFieldId, clickupVal);
-                  }
-                } catch (e) {
-                  console.error(`Mock custom field sync failed for ${m.clickupFieldName}:`, e);
-                }
-              })
-            );
-          }
-        } catch (err) {
-          console.error("Failed to sync mock custom fields:", err);
-        }
-      }
-
-      logActivity(shop, "order_synced", `Sent test task (Order #${mockOrderNumber}) to ClickUp`);
+      logActivity(shop, "order_synced", `Sent test record (Order #${mockOrderNumber}) to ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}`);
       return { ok: true, sentTestTask: true };
     } catch (e) {
       return { ok: false, error: `Failed to send test task: ${e.message}` };
@@ -396,14 +474,12 @@ const BANNER_COLORS = {
 export default function Index() {
   const {
     shop,
-    email,
     clickupConnectState,
     connected,
     selectedPlatform,
     workspaceName,
     listConnections,
     lists,
-    listError,
     clickupFields,
     fieldMappings,
     subscription,
@@ -435,9 +511,10 @@ export default function Index() {
   const statusCfg = SYNC_STATUS_CONFIG[syncStatus];
 
   const handleDisconnect = (e) => {
+    const platformName = selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion";
     if (
       !window.confirm(
-        "Are you sure you want to disconnect ClickUp? Order syncing will stop immediately."
+        `Are you sure you want to disconnect ${platformName}? Order syncing will stop immediately.`
       )
     ) {
       e.preventDefault();
@@ -585,7 +662,7 @@ export default function Index() {
             <div style={{ flex: 1 }}>
               <h1 style={styles.title}>SyncUp</h1>
               <p style={styles.subtitle}>
-                Automatically sync your Shopify orders to ClickUp.
+                Automatically sync your Shopify orders to ClickUp, Monday, or Notion.
               </p>
             </div>
             <div
@@ -632,7 +709,7 @@ export default function Index() {
           )}
           {actionData?.sentTestTask && (
             <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              ✓ Test task successfully sent to ClickUp! Check your connected ClickUp list.
+              {`✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`}
             </div>
           )}
           {removedLists && (
@@ -851,290 +928,347 @@ export default function Index() {
                 </div>
               </section>
 
-              {/* SECTION 3 — CLICKUP CONNECTION */}
+              {/* SECTION 3 — INTEGRATION SETUP WIZARD */}
               {!connected ? (
                 <div>
-                  <section style={{ ...styles.card, marginBottom: 24 }}>
-                    <h2 style={{ ...styles.cardTitle, marginTop: 0, textAlign: "center" }}>Choose your Workspace Tool</h2>
-                    <p style={{ ...styles.cardText, textAlign: "center", marginBottom: 24 }}>
-                      Select the project management platform you want to sync your Shopify orders to.
-                    </p>
+                  {selectedTool === null ? (
+                    /* STEP 1: WELCOME & TOOL SELECTOR GRID */
+                    <section style={{ ...styles.card, marginBottom: 24 }}>
+                      <h2 style={{ ...styles.cardTitle, marginTop: 0, textAlign: "center" }}>Choose your Workspace Tool</h2>
+                      <p style={{ ...styles.cardText, textAlign: "center", marginBottom: 24 }}>
+                        Select the project management platform you want to sync your Shopify orders to.
+                      </p>
 
-                    <div className="su-platform-grid">
-                      {/* ClickUp */}
-                      <button
-                        type="button"
-                        className={`su-platform-card clickup ${selectedTool === "clickup" ? "selected" : ""}`}
-                        onClick={() => setSelectedTool("clickup")}
-                        style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
-                      >
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-                          <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-                              <path d="M5 9L12 3L19 9" stroke="#7b61ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                              <path d="M12 14C9.5 14 7.5 16 7.5 18.5C7.5 20.5 9 21 12 21C15 21 16.5 20.5 16.5 18.5C16.5 16 14.5 14 12 14Z" fill="#7b61ff" />
-                            </svg>
+                      <div className="su-platform-grid">
+                        {/* ClickUp */}
+                        <button
+                          type="button"
+                          className="su-platform-card clickup"
+                          onClick={() => setSelectedTool("clickup")}
+                          style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                            <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                                <path d="M5 9L12 3L19 9" stroke="#7b61ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M12 14C9.5 14 7.5 16 7.5 18.5C7.5 20.5 9 21 12 21C15 21 16.5 20.5 16.5 18.5C16.5 16 14.5 14 12 14Z" fill="#7b61ff" />
+                              </svg>
+                            </div>
+                            <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>ClickUp</span>
                           </div>
-                          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>ClickUp</span>
-                        </div>
-                        <span className="su-platform-badge live">Live</span>
-                      </button>
+                          <span className="su-platform-badge live">Live</span>
+                        </button>
 
-                      {/* Monday.com */}
-                      <button
-                        type="button"
-                        className={`su-platform-card monday ${selectedTool === "monday" ? "selected" : ""}`}
-                        onClick={() => setSelectedTool("monday")}
-                        style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
-                      >
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-                          <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
-                              <rect x="5" y="10" width="30" height="6" rx="3" fill="#ff3d57" />
-                              <rect x="5" y="20" width="30" height="6" rx="3" fill="#ffcb00" />
-                              <rect x="5" y="30" width="30" height="6" rx="3" fill="#00cff4" />
-                            </svg>
+                        {/* Monday.com */}
+                        <button
+                          type="button"
+                          className="su-platform-card monday"
+                          onClick={() => setSelectedTool("monday")}
+                          style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                            <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
+                                <rect x="5" y="10" width="30" height="6" rx="3" fill="#ff3d57" />
+                                <rect x="5" y="20" width="30" height="6" rx="3" fill="#ffcb00" />
+                                <rect x="5" y="30" width="30" height="6" rx="3" fill="#00cff4" />
+                              </svg>
+                            </div>
+                            <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Monday.com</span>
                           </div>
-                          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Monday.com</span>
-                        </div>
-                        <span className="su-platform-badge coming-soon">Beta</span>
-                      </button>
+                          <span className="su-platform-badge coming-soon">Beta</span>
+                        </button>
 
-                      {/* Notion */}
-                      <button
-                        type="button"
-                        className={`su-platform-card notion ${selectedTool === "notion" ? "selected" : ""}`}
-                        onClick={() => setSelectedTool("notion")}
-                        style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
-                      >
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-                          <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="3" y="3" width="18" height="18" rx="4" />
-                              <path d="M9 17V7l6 10V7" />
-                            </svg>
+                        {/* Notion */}
+                        <button
+                          type="button"
+                          className="su-platform-card notion"
+                          onClick={() => setSelectedTool("notion")}
+                          style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                            <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="3" y="3" width="18" height="18" rx="4" />
+                                <path d="M9 17V7l6 10V7" />
+                              </svg>
+                            </div>
+                            <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Notion</span>
                           </div>
-                          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Notion</span>
-                        </div>
-                        <span className="su-platform-badge coming-soon">Beta</span>
-                      </button>
-                    </div>
-                  </section>
+                          <span className="su-platform-badge coming-soon">Beta</span>
+                        </button>
+                      </div>
+                    </section>
+                  ) : (
+                    /* STEP 2: DEDICATED TOOL CONFIGURATION SCREEN */
+                    <div>
+                      {/* Navigation Link Back */}
+                      <div style={{ marginBottom: 16 }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTool(null)}
+                          style={{
+                            background: "none",
+                            color: C.accent,
+                            cursor: "pointer",
+                            fontSize: 14,
+                            fontWeight: 600,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "6px 12px",
+                            borderRadius: "8px",
+                            backgroundColor: "rgba(0, 196, 140, 0.06)",
+                            border: "1px solid rgba(0, 196, 140, 0.15)",
+                            outline: "none",
+                            transition: "all 0.2s ease",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = "rgba(0, 196, 140, 0.12)";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = "rgba(0, 196, 140, 0.06)";
+                          }}
+                        >
+                          &larr; Back to tool selector
+                        </button>
+                      </div>
 
-                  {/* Dynamic Panels depending on selectedPlatform */}
-                  {selectedTool === "clickup" && (
-                    <section style={styles.card}>
-                      <h2 style={styles.cardTitle}>Connect ClickUp Workspace</h2>
-                      
-                      {!isTrialOrSubscriptionActive ? (
-                        <div>
-                          <p style={{ ...styles.cardText, marginBottom: 24 }}>
-                            SyncUp has paused task creation because you do not have an active subscription. Choose a plan below to unlock ClickUp connection and start syncing.
-                          </p>
+                      {/* ClickUp configuration and billing */}
+                      {selectedTool === "clickup" && (
+                        <section style={styles.card}>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Connect ClickUp Workspace</h2>
+                          
+                          {!isTrialOrSubscriptionActive ? (
+                            <div>
+                              <p style={{ ...styles.cardText, marginBottom: 24 }}>
+                                SyncUp has paused task creation because you do not have an active subscription. Choose a plan below to unlock ClickUp connection and start syncing.
+                              </p>
 
-                          {/* Pricing Cards Grid */}
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch" style={{ marginTop: 24 }}>
-                            {["standard", "growth", "pro"].map((key) => {
-                              const planKey = `${key}_${billingInterval}`;
-                              const plan = PLANS[planKey];
-                              if (!plan) return null;
-                              const isHighlighted = key === "growth";
-                              
-                              const overlayPlanSpecs = {
-                                standard: {
-                                  badge: "Best for Starters",
-                                  priceDesc: "$29.99/mo",
-                                  annualPriceDesc: "$19.99/mo",
-                                  billedDesc: "Billed annually as $239",
-                                  regMonthly: "$49.99",
-                                  regAnnual: "$399",
-                                },
-                                growth: {
-                                  badge: "Most Popular",
-                                  priceDesc: "$49.99/mo",
-                                  annualPriceDesc: "$34.99/mo",
-                                  billedDesc: "Billed annually as $419",
-                                  regMonthly: "$79.99",
-                                  regAnnual: "$699",
-                                },
-                                pro: {
-                                  badge: "Concierge Setup Included",
-                                  priceDesc: "$99.99/mo",
-                                  annualPriceDesc: "$69.99/mo",
-                                  billedDesc: "Billed annually as $839",
-                                  regMonthly: "$149.99",
-                                  regAnnual: "$1199",
-                                },
-                              };
-                              const spec = overlayPlanSpecs[key];
-
-                              const displayPrice = billingInterval === "annual" 
-                                ? spec.annualPriceDesc 
-                                : spec.priceDesc;
-
-                              const regularPrice = billingInterval === "annual"
-                                ? spec.regAnnual
-                                : spec.regMonthly;
-
-                              return (
-                                <div
-                                  key={key}
-                                  className={`bg-zinc-950/45 border rounded-2xl p-6 flex flex-col justify-between transition-all duration-300 relative ${
-                                    isHighlighted 
-                                      ? "border-emerald-500/40 shadow-xl shadow-emerald-950/15 hover:border-emerald-500/60" 
-                                      : "border-zinc-800 hover:border-zinc-700"
-                                  }`}
-                                  style={{ border: isHighlighted ? "1px solid rgba(16, 185, 129, 0.4)" : `1px solid ${C.border}`, background: "#0f0f0f" }}
+                              {/* Toggle */}
+                              <div className="flex justify-center items-center gap-3 mb-8">
+                                <span className={`text-xs font-semibold transition-colors duration-200 ${billingInterval === "monthly" ? "text-zinc-100" : "text-zinc-500"}`}>
+                                  Monthly Billing
+                                </span>
+                                <button
+                                  type="button"
+                                  className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none bg-zinc-800"
+                                  onClick={() => setBillingInterval(billingInterval === "monthly" ? "annual" : "monthly")}
+                                  role="switch"
+                                  aria-checked={billingInterval === "annual"}
                                 >
-                                  {isHighlighted && (
-                                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
-                                      {spec.badge}
-                                    </div>
-                                  )}
+                                  <span
+                                    aria-hidden="true"
+                                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-emerald-400 shadow ring-0 transition duration-200 ease-in-out ${
+                                      billingInterval === "annual" ? "translate-x-5" : "translate-x-0"
+                                    }`}
+                                  />
+                                </button>
+                                <span className={`text-xs font-semibold transition-colors duration-200 ${billingInterval === "annual" ? "text-emerald-400" : "text-zinc-500"}`}>
+                                  Annual Billing <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold ml-1 border border-emerald-400/20">Save ~30%</span>
+                                </span>
+                              </div>
 
-                                  <div>
-                                    <div className="mb-4">
-                                      <span className="text-zinc-500 text-[10px] font-semibold tracking-wider uppercase block mb-1">
-                                        {key} tier
-                                      </span>
-                                      <h3 className="text-base font-bold text-white tracking-tight">{plan.name}</h3>
-                                    </div>
+                              {/* Pricing Cards Grid */}
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+                                {["standard", "growth", "pro"].map((key) => {
+                                  const planKey = `${key}_${billingInterval}`;
+                                  const plan = PLANS[planKey];
+                                  if (!plan) return null;
+                                  const isHighlighted = key === "growth";
+                                  
+                                  const overlayPlanSpecs = {
+                                    standard: {
+                                      badge: "Best for Starters",
+                                      priceDesc: "$29.99/mo",
+                                      annualPriceDesc: "$19.99/mo",
+                                      billedDesc: "Billed annually as $239",
+                                      regMonthly: "$49.99",
+                                      regAnnual: "$399",
+                                    },
+                                    growth: {
+                                      badge: "Most Popular",
+                                      priceDesc: "$49.99/mo",
+                                      annualPriceDesc: "$34.99/mo",
+                                      billedDesc: "Billed annually as $419",
+                                      regMonthly: "$79.99",
+                                      regAnnual: "$699",
+                                    },
+                                    pro: {
+                                      badge: "Concierge Setup Included",
+                                      priceDesc: "$99.99/mo",
+                                      annualPriceDesc: "$69.99/mo",
+                                      billedDesc: "Billed annually as $839",
+                                      regMonthly: "$149.99",
+                                      regAnnual: "$1199",
+                                    },
+                                  };
+                                  const spec = overlayPlanSpecs[key];
 
-                                    {/* Price */}
-                                    <div className="mb-6">
-                                      <div className="flex items-baseline flex-wrap gap-1">
-                                        {regularPrice && (
-                                          <span className="text-xs text-zinc-500 line-through mr-1 font-medium">
-                                            {regularPrice}
-                                          </span>
-                                        )}
-                                        <span className="text-2xl font-extrabold text-white tracking-tight">
-                                          {displayPrice.split("/")[0]}
-                                        </span>
-                                        <span className="text-zinc-400 text-xs font-medium">
-                                          /{displayPrice.split("/")[1]}
-                                        </span>
-                                      </div>
+                                  const displayPrice = billingInterval === "annual" 
+                                    ? spec.annualPriceDesc 
+                                    : spec.priceDesc;
 
-                                      {/* Annual details */}
-                                      {billingInterval === "annual" && (
-                                        <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
-                                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                                          {spec.billedDesc} ({spec.priceDesc} equivalent)
+                                  const regularPrice = billingInterval === "annual"
+                                    ? spec.regAnnual
+                                    : spec.regMonthly;
+
+                                  return (
+                                    <div
+                                      key={key}
+                                      className={`bg-zinc-950/45 border rounded-2xl p-6 flex flex-col justify-between transition-all duration-300 relative ${
+                                        isHighlighted 
+                                          ? "border-emerald-500/40 shadow-xl shadow-emerald-950/15 hover:border-emerald-500/60" 
+                                          : "border-zinc-800 hover:border-zinc-700"
+                                      }`}
+                                      style={{ border: isHighlighted ? "1px solid rgba(16, 185, 129, 0.4)" : `1px solid ${C.border}`, background: "#0f0f0f" }}
+                                    >
+                                      {isHighlighted && (
+                                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
+                                          {spec.badge}
                                         </div>
                                       )}
+
+                                      <div>
+                                        <div className="mb-4">
+                                          <span className="text-zinc-500 text-[10px] font-semibold tracking-wider uppercase block mb-1">
+                                            {key} tier
+                                          </span>
+                                          <h3 className="text-base font-bold text-white tracking-tight">{plan.name}</h3>
+                                        </div>
+
+                                        {/* Price */}
+                                        <div className="mb-6">
+                                          <div className="flex items-baseline flex-wrap gap-1">
+                                            {regularPrice && (
+                                              <span className="text-xs text-zinc-500 line-through mr-1 font-medium">
+                                                {regularPrice}
+                                              </span>
+                                            )}
+                                            <span className="text-2xl font-extrabold text-white tracking-tight">
+                                              {displayPrice.split("/")[0]}
+                                            </span>
+                                            <span className="text-zinc-400 text-xs font-medium">
+                                              /{displayPrice.split("/")[1]}
+                                            </span>
+                                          </div>
+
+                                          {/* Annual details */}
+                                          {billingInterval === "annual" && (
+                                            <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
+                                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                              {spec.billedDesc} ({spec.priceDesc} equivalent)
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* Divider */}
+                                        <div className="h-px bg-zinc-800/80 mb-5" style={{ background: C.border }}></div>
+
+                                        {/* Features translated dynamically */}
+                                        <ul className="space-y-3 mb-6 text-xs text-zinc-300" style={{ listStyle: "none", padding: 0 }}>
+                                          {getTranslatedFeatures(plan.features, selectedTool).map((feat) => (
+                                            <li key={feat} className="flex items-start">
+                                              <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
+                                              <span className="leading-snug">{feat}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+
+                                      {/* Submit action */}
+                                      <Form method="post" action={`/app/billing?platform=clickup`} target="_top" className="mt-auto">
+                                        <input type="hidden" name="intent" value="upgrade" />
+                                        <input type="hidden" name="plan" value={planKey} />
+                                        <button
+                                          type="submit"
+                                          className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
+                                            isHighlighted
+                                              ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
+                                              : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
+                                          }`}
+                                          style={{
+                                            border: isHighlighted ? "none" : `1px solid ${C.border}`,
+                                            background: isHighlighted ? C.accent : "#1a1a1a",
+                                            color: isHighlighted ? "#03251c" : C.text,
+                                            width: "100%",
+                                          }}
+                                          disabled={isSubmitting}
+                                        >
+                                          {isSubmitting ? "Connecting..." : `Select ${plan.name.split(" ")[0]}`}
+                                        </button>
+                                      </Form>
                                     </div>
-
-                                    {/* Divider */}
-                                    <div className="h-px bg-zinc-800/80 mb-5" style={{ background: C.border }}></div>
-
-                                    {/* Features */}
-                                    <ul className="space-y-3 mb-6 text-xs text-zinc-300" style={{ listStyle: "none", padding: 0 }}>
-                                      {getTranslatedFeatures(plan.features, "clickup").map((feat) => (
-                                        <li key={feat} className="flex items-start">
-                                          <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
-                                          <span className="leading-snug">{feat}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-
-                                  {/* Submit action */}
-                                  <Form method="post" action={`/app/billing?platform=clickup`} target="_top" className="mt-auto">
-                                    <input type="hidden" name="intent" value="upgrade" />
-                                    <input type="hidden" name="plan" value={planKey} />
-                                    <button
-                                      type="submit"
-                                      className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
-                                        isHighlighted
-                                          ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
-                                          : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
-                                      }`}
-                                      style={{
-                                        border: isHighlighted ? "none" : `1px solid ${C.border}`,
-                                        background: isHighlighted ? C.accent : "#1a1a1a",
-                                        color: isHighlighted ? "#03251c" : C.text,
-                                        width: "100%",
-                                      }}
-                                      disabled={isSubmitting}
-                                    >
-                                      {isSubmitting ? "Connecting..." : `Select ${plan.name.split(" ")[0]}`}
-                                    </button>
-                                  </Form>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <>
-                          <p style={styles.cardText}>
-                            Connect ClickUp to start syncing new orders into a list of your
-                            choice. New orders become tasks, fulfilled orders get marked
-                            complete — automatically.
-                          </p>
-                          <a
-                            href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
-                            target="_top"
-                            style={{ ...styles.primaryButton, display: "inline-flex", alignItems: "center", gap: 8 }}
-                          >
-                            <span>Connect ClickUp</span>
-                            <span style={{ fontSize: 11 }}>&rarr;</span>
-                          </a>
-                        </>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <p style={styles.cardText}>
+                                Connect ClickUp to start syncing new orders into a list of your
+                                choice. New orders become tasks, fulfilled orders get marked
+                                complete — automatically.
+                              </p>
+                              <a
+                                href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
+                                target="_top"
+                                style={{ ...styles.primaryButton, display: "inline-flex", alignItems: "center", gap: 8 }}
+                              >
+                                <span>Connect ClickUp</span>
+                                <span style={{ fontSize: 11 }}>&rarr;</span>
+                              </a>
+                            </>
+                          )}
+                        </section>
                       )}
-                    </section>
-                  )}
 
-                  {(selectedTool === "monday" || selectedTool === "notion") && (
-                    <section style={styles.card}>
-                      <h2 style={styles.cardTitle}>
-                        Join {selectedTool === "monday" ? "Monday.com" : "Notion"} Beta Waitlist
-                      </h2>
-                      
-                      {actionData?.joinedWaitlist === selectedTool ? (
-                        <div style={{ ...styles.successBanner, marginTop: 12 }}>
-                          ✓ Thanks! You've successfully joined the waitlist for {selectedTool === "monday" ? "Monday.com" : "Notion"}. We'll email you at <strong>{actionData.waitlistEmail}</strong> once it's available for testing.
-                        </div>
-                      ) : (
-                        <>
+                      {/* Monday.com / Notion active connection forms */}
+                      {(selectedTool === "monday" || selectedTool === "notion") && (
+                        <section style={styles.card}>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>
+                            Connect {selectedTool === "monday" ? "Monday.com" : "Notion"}
+                          </h2>
+                          
                           <p style={styles.cardText}>
-                            The {selectedTool === "monday" ? "Monday.com" : "Notion"} integration is currently under active development. Enter your email below to request early beta access and be notified when it goes live.
+                            {selectedTool === "monday" 
+                              ? "Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration > API." 
+                              : "Enter your Notion Integration Token to connect your account. You can create an integration token at developers.notion.com/my-integrations."}
                           </p>
+
+                          {actionData?.error && (
+                            <div style={{ ...styles.errorBanner, marginTop: 12, marginBottom: 12 }}>
+                              {actionData.error}
+                            </div>
+                          )}
+
                           <Form method="post" style={{ ...styles.form, marginTop: 16 }}>
-                            <input type="hidden" name="intent" value="join_waitlist" />
+                            <input type="hidden" name="intent" value="connect_platform" />
                             <input type="hidden" name="platform" value={selectedTool} />
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                              <label style={styles.formLabel} htmlFor="waitlist_email">Email address</label>
+                              <label style={styles.formLabel} htmlFor="platform_token">
+                                {selectedTool === "monday" ? "Monday.com Personal Access Token" : "Notion Integration Token"}
+                              </label>
                               <input
-                                id="waitlist_email"
-                                name="email"
-                                type="email"
+                                id="platform_token"
+                                name="token"
+                                type="password"
                                 required
-                                placeholder="e.g. merchant@store.com"
-                                defaultValue={email || ""}
+                                placeholder={selectedTool === "monday" ? "e.g. eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." : "e.g. secret_abc123xyz..."}
                                 style={styles.input}
                               />
                             </div>
                             <button
                               type="submit"
-                              style={{ ...styles.primaryButton, width: "100%", marginTop: 8 }}
+                              style={{ ...styles.primaryButton, width: "100%", marginTop: 12 }}
                               disabled={isSubmitting}
                             >
-                              {isSubmitting ? "Joining..." : `Join ${selectedTool === "monday" ? "Monday.com" : "Notion"} Waitlist`}
+                              {isSubmitting ? "Connecting..." : `Connect ${selectedTool === "monday" ? "Monday.com" : "Notion"}`}
                             </button>
                           </Form>
-                        </>
+                        </section>
                       )}
-                    </section>
-                  )}
-
-                  {!selectedTool && (
-                    <section style={{ ...styles.card, textAlign: "center", padding: "40px 24px" }}>
-                      <p style={{ ...styles.cardText, margin: 0 }}>
-                        Select one of the workspace tools above to begin configuration.
-                      </p>
-                    </section>
+                    </div>
                   )}
                 </div>
               ) : (
@@ -1145,7 +1279,7 @@ export default function Index() {
                       <span style={styles.statusText}>
                         {workspaceName
                           ? `Connected to ${workspaceName}`
-                          : "ClickUp connected"}
+                          : `${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} connected`}
                       </span>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
@@ -1180,15 +1314,14 @@ export default function Index() {
                     </div>
                   )}
 
-                  <h2 style={styles.cardTitle}>Configure order list connections</h2>
+                  <h2 style={styles.cardTitle}>Configure order {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections</h2>
                   <p style={styles.cardText}>
-                    Select where new orders should sync. Growth plan merchants can configure up to 5 lists with keyword filters to route orders automatically.
+                    Select where new orders should sync. Growth plan merchants can configure up to 5 {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} with keyword filters to route orders automatically.
                   </p>
 
                   {lists.length === 0 ? (
                     <p style={styles.cardText}>
-                      No lists found in your ClickUp workspaces. Create a list in
-                      ClickUp then reload this page.
+                      No {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} found in your {selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} workspaces. Create one first then reload this page.
                     </p>
                   ) : (
                     <Form method="post" style={styles.form}>
@@ -1199,7 +1332,9 @@ export default function Index() {
                         {conns.map((conn, index) => (
                           <div key={index} style={styles.connectionRow}>
                             <div style={{ flex: 2, minWidth: "150px" }}>
-                              <label style={styles.formLabel} htmlFor={`list_${index}`}>ClickUp List</label>
+                              <label style={styles.formLabel} htmlFor={`list_${index}`}>
+                                {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}
+                              </label>
                               <select
                                 id={`list_${index}`}
                                 value={conn.id}
@@ -1216,7 +1351,7 @@ export default function Index() {
                                 }}
                                 style={styles.select}
                               >
-                                <option value="">Select a list...</option>
+                                <option value="">Select...</option>
                                 {lists.map((list) => (
                                   <option key={list.id} value={list.id}>
                                     {list.name}
@@ -1239,6 +1374,7 @@ export default function Index() {
                                     setConns(updated);
                                   }}
                                   style={styles.input}
+                                  className="border border-zinc-800"
                                 />
                               </div>
                             )}
@@ -1262,7 +1398,7 @@ export default function Index() {
                           onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "" }])}
                           style={styles.addConnButton}
                         >
-                          + Add list connection
+                          + Add connection
                         </button>
                       )}
 
@@ -1278,19 +1414,21 @@ export default function Index() {
                 </section>
               )}
 
-              {/* SECTION 3.5 — CLICKUP CUSTOM FIELD MAPPING */}
+              {/* SECTION 3.5 — CUSTOM FIELD / COLUMN / PROPERTY MAPPING */}
               {connected && (
                 <section style={{ ...styles.card, marginTop: 16 }}>
                   {(() => {
                     const isTrial = subscription.planName === "trial";
                     const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
                     const isMappingUnlocked = isGrowthOrPro || isTrial;
+                    const platformName = selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion";
+                    const termFieldName = selectedPlatform === "clickup" ? "Custom Field" : selectedPlatform === "monday" ? "Column" : "Property";
 
                     if (!isMappingUnlocked) {
                       return (
                         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                           <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                            ClickUp Custom Field Mapping
+                            {platformName} {termFieldName} Mapping
                             <span style={{
                               fontSize: 10,
                               color: "#ff9900",
@@ -1305,7 +1443,7 @@ export default function Index() {
                             </span>
                           </h2>
                           <p style={styles.cardText}>
-                            Map Shopify order attributes directly to your custom columns in ClickUp. This feature is available on the Growth & Pro plans.
+                            Map Shopify order attributes directly to your custom {termFieldName.toLowerCase()}s in {platformName}. This feature is available on the Growth & Pro plans.
                           </p>
                           <div style={{ marginTop: 8 }}>
                             <Link
@@ -1325,9 +1463,9 @@ export default function Index() {
                     if (!hasSelectedList) {
                       return (
                         <div>
-                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>ClickUp Custom Field Mapping</h2>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>{platformName} {termFieldName} Mapping</h2>
                           <p style={styles.cardText}>
-                            Please configure and save at least one ClickUp list connection above to begin mapping custom fields.
+                            Please configure and save at least one connection above to begin mapping custom {termFieldName.toLowerCase()}s.
                           </p>
                         </div>
                       );
@@ -1338,7 +1476,7 @@ export default function Index() {
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
                           <div style={{ flex: 1, minWidth: "250px" }}>
                             <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                              ClickUp Custom Field Mapping
+                              {platformName} {termFieldName} Mapping
                               <span style={{
                                 fontSize: 10,
                                 color: C.accent,
@@ -1353,7 +1491,7 @@ export default function Index() {
                               </span>
                             </h2>
                             <p style={styles.cardText}>
-                              Map Shopify order attributes directly to custom columns inside your primary connected ClickUp list.
+                              Map Shopify order attributes directly to custom {termFieldName.toLowerCase()}s inside your primary connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}.
                             </p>
                           </div>
                           
@@ -1366,18 +1504,18 @@ export default function Index() {
                               disabled={isSubmitting}
                               style={{ border: "none", color: "#03251c", outline: "none" }}
                             >
-                              {isSubmitting ? "Saving..." : "Save field mappings"}
+                              {isSubmitting ? "Saving..." : "Save mappings"}
                             </button>
                           </Form>
                         </div>
 
                         {actionData?.savedMappings && (
                           <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-                            ✓ Field mappings saved successfully.
+                            ✓ Mappings saved successfully.
                           </div>
                         )}
 
-                        {fieldMappingsList.length > 0 && (
+                        {selectedPlatform === "clickup" && fieldMappingsList.length > 0 && (
                           <div style={{ ...styles.warningBanner, marginBottom: 16, fontSize: "13px", lineHeight: "1.4" }}>
                             <strong>⚠️ ClickUp Free Tier Notice:</strong> ClickUp Free Forever plans have a lifetime limit of 60 custom field uses. If your workspace is on the Free tier, updates to mapped fields will stop syncing once this limit is reached.
                           </div>
@@ -1385,7 +1523,7 @@ export default function Index() {
 
                         {clickupFields.length === 0 ? (
                           <p style={styles.cardText}>
-                            No custom fields found in your connected ClickUp list. Create some custom fields in ClickUp first, then reload this page.
+                            No custom {termFieldName.toLowerCase()}s found in your connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}. Create some first, then reload this page.
                           </p>
                         ) : (
                           <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
@@ -1393,7 +1531,7 @@ export default function Index() {
                             <div className="grid grid-cols-12 bg-zinc-900/50 p-4 border-b border-zinc-800 font-semibold text-xs tracking-wider uppercase text-zinc-400">
                               <div className="col-span-5">Shopify Source Field</div>
                               <div className="col-span-2 text-center">Flow</div>
-                              <div className="col-span-5">ClickUp Custom Field (Destination)</div>
+                              <div className="col-span-5">Destination {termFieldName}</div>
                             </div>
 
                             {/* Mappings */}
@@ -1558,7 +1696,7 @@ export default function Index() {
                         <div style={styles.lockIcon}>🔒</div>
                         <div style={styles.lockTitle}>Growth Plan Feature</div>
                         <div style={styles.lockText}>
-                          Upgrade to the Growth plan to unlock sync analytics, up to 5 list connections, priority support, and automatic webhook retries.
+                          Upgrade to the Growth plan to unlock sync analytics, up to 5 {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections, priority support, and automatic webhook retries.
                         </div>
                         <Link to={`/app/billing?platform=${selectedPlatform}`} style={styles.upgradeInlineButton}>
                           Upgrade to Growth

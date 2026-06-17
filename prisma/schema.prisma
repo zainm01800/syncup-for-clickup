@@ -31,38 +31,6 @@ model Session {
   refreshTokenExpires DateTime?
 }
 
-// Stores the ClickUp OAuth token and the chosen sync list for each shop.
-model ClickUpConnection {
-  shopDomain      String   @id @map("shop_domain")
-  accessToken     String   @map("access_token")
-  workspaceName   String?  @map("workspace_name")
-  listId          String?  @map("list_id")
-  listName        String?  @map("list_name")
-  listConnections String?  @map("list_connections") // Serialized JSON array of { id, name, keyword }
-  fieldMappings   String?  @map("field_mappings")    // Serialized JSON array of { shopifyField, clickupFieldId, clickupFieldType }
-  isFreePlan      Boolean  @default(false) @map("is_free_plan")
-  selectedPlatform String  @default("clickup") @map("selected_platform")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-
-  @@map("clickup_connections")
-}
-
-// Maps a Shopify order to the ClickUp task that was created for it,
-// so the order can be marked complete when it is fulfilled.
-model OrderTask {
-  id             Int      @id @default(autoincrement())
-  shopifyOrderId String   @map("shopify_order_id")
-  clickupTaskId  String   @map("clickup_task_id")
-  shopDomain     String   @map("shop_domain")
-  status         String   @default("synced")
-  orderNumber    String?  @map("order_number")
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  @@unique([shopDomain, shopifyOrderId])
-  @@map("order_tasks")
-}
-
 // Tracks the billing plan and monthly order usage for each shop.
 model Subscription {
   shopDomain             String    @id @map("shop_domain")
@@ -111,5 +79,96 @@ model SyncJob {
 
   @@index([status])
   @@map("sync_jobs")
+}
+
+enum IntegrationProvider {
+  CLICKUP
+  MONDAY
+  NOTION
+}
+
+model PlatformConnection {
+  id                   String              @id @default(uuid())
+  shopDomain           String              @map("shop_domain")
+  provider             IntegrationProvider
+  isActive             Boolean             @default(true) @map("is_active")
+  encryptedAccessToken String              @map("encrypted_access_token")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  // Concrete child-table relationships (Delegated Schema)
+  clickUpMetadata      ClickUpMetadata?
+  mondayMetadata       MondayMetadata?
+  notionMetadata       NotionMetadata?
+
+  // Tracking of connected targets to enforce unified billing limits
+  syncTargets          SyncTarget[]
+
+  @@unique([shopDomain, provider])
+  @@map("platform_connections")
+}
+
+model ClickUpMetadata {
+  id            String             @id @default(uuid())
+  connectionId  String             @unique @map("connection_id")
+  connection    PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  workspaceId   String             @map("workspace_id")
+  workspaceName String             @map("workspace_name")
+  fieldMappings String?            @map("field_mappings") // Serialized JSON array of custom field mappings
+  isFreePlan    Boolean            @default(false) @map("is_free_plan")
+
+  @@map("clickup_metadata")
+}
+
+model MondayMetadata {
+  id            String             @id @default(uuid())
+  connectionId  String             @unique @map("connection_id")
+  connection    PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  workspaceId   String             @map("workspace_id")
+  fieldMappings String?            @map("field_mappings")
+
+  @@map("monday_metadata")
+}
+
+model NotionMetadata {
+  id            String             @id @default(uuid())
+  connectionId  String             @unique @map("connection_id")
+  connection    PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  workspaceId   String             @map("workspace_id")
+  fieldMappings String?            @map("field_mappings")
+
+  @@map("notion_metadata")
+}
+
+model SyncTarget {
+  id                 String             @id @default(uuid())
+  connectionId       String             @map("connection_id")
+  connection         PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  targetResourceId   String             @map("target_resource_id") // ClickUp List ID, Monday Board ID, or Notion Database ID
+  targetResourceName String             @map("target_resource_name")
+  keyword            String?            @map("keyword")
+  isActive           Boolean            @default(true) @map("is_active")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+  orderSyncRecords   OrderSyncRecord[]
+
+  @@unique([connectionId, targetResourceId])
+  @@map("sync_targets")
+}
+
+model OrderSyncRecord {
+  id             String     @id @default(uuid())
+  shopDomain     String     @map("shop_domain")
+  shopifyOrderId String     @map("shopify_order_id")
+  syncTargetId   String     @map("sync_target_id")
+  syncTarget     SyncTarget @relation(fields: [syncTargetId], references: [id], onDelete: Cascade)
+  targetRecordId String     @map("target_record_id") // ClickUp Task ID, Monday Item ID, Notion Page ID
+  syncStatus     String     @default("synced") @map("sync_status") // synced, failed, retrying, fulfilled
+  orderNumber    String?    @map("order_number")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  @@unique([shopifyOrderId, syncTargetId])
+  @@map("order_sync_records")
 }
 

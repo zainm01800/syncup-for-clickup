@@ -37,7 +37,6 @@ export const action = async ({ request }) => {
     }
 
     const plan = PLANS[planKey];
-    const isDowngrade = sub && sub.planName.startsWith("growth") && planKey.startsWith("standard");
 
     await prisma.subscription.upsert({
       where: { shopDomain: shop },

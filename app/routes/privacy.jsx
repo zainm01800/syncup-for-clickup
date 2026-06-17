@@ -45,7 +45,7 @@ export default function PrivacyPolicy() {
           </p>
           <p style={styles.p}>
             <strong>Project tool credentials:</strong> We store your connected
-            project management tool's credentials (such as OAuth access tokens)
+            project management tool&apos;s credentials (such as OAuth access tokens)
             and the target folder/list/board ID you choose to sync orders into.
             This data is stored securely and used solely to create and update
             tasks on your behalf.

@@ -1,6 +1,7 @@
 import prisma from "./db.server";
 import { encryptToken, decryptToken } from "./crypto.server";
 
+
 // Fallback used only when the orders/create webhook payload arrives without a
 // customer name (e.g. before protected-customer-data fields were granted, or
 // for guest-ish edge cases). Looks the customer up via the Admin API.
@@ -197,213 +198,165 @@ export async function completeTask(token, taskId) {
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Persistence helpers — ClickUpConnection
+// Connection / Session helpers
 // ---------------------------------------------------------------------------
 
 export async function getConnection(shop) {
-  const conn = await prisma.clickUpConnection.findUnique({
-    where: { shopDomain: shop },
+  const conn = await prisma.platformConnection.findFirst({
+    where: { shopDomain: shop, isActive: true },
+    include: {
+      clickUpMetadata: true,
+      mondayMetadata: true,
+      notionMetadata: true,
+      syncTargets: { where: { isActive: true } },
+    },
   });
   if (!conn) return null;
-  const accessToken = await decryptToken(conn.accessToken);
-  // null means old-format token that can't be decrypted — treat as disconnected
+  const accessToken = await decryptToken(conn.encryptedAccessToken);
   if (!accessToken) return null;
 
-  let listConnections = [];
-  if (conn.listConnections) {
-    try {
-      listConnections = JSON.parse(conn.listConnections);
-    } catch (e) {
-      console.error("Failed to parse listConnections:", e);
-    }
-  }
+  const listConnections = conn.syncTargets.map((t) => ({
+    id: t.targetResourceId,
+    name: t.targetResourceName,
+    keyword: t.keyword || "",
+  }));
 
-  // Backfill if empty but listId exists
-  if (listConnections.length === 0 && conn.listId) {
-    listConnections = [{ id: conn.listId, name: conn.listName || "", keyword: "" }];
-  }
+  let metadata = null;
+  if (conn.provider === "CLICKUP") metadata = conn.clickUpMetadata;
+  else if (conn.provider === "MONDAY") metadata = conn.mondayMetadata;
+  else if (conn.provider === "NOTION") metadata = conn.notionMetadata;
 
-  return { ...conn, accessToken, listConnections };
+  return {
+    id: conn.id,
+    shopDomain: conn.shopDomain,
+    accessToken,
+    selectedPlatform: conn.provider.toLowerCase(),
+    workspaceName: metadata?.workspaceName || (conn.provider === "CLICKUP" ? "ClickUp Workspace" : conn.provider === "MONDAY" ? "Monday.com Workspace" : "Notion Workspace"),
+    listId: listConnections[0]?.id || null,
+    listName: listConnections[0]?.name || null,
+    listConnections,
+    fieldMappings: metadata?.fieldMappings || "[]",
+    isFreePlan: metadata?.isFreePlan || false,
+  };
 }
 
 export async function saveToken(shop, accessToken, workspaceName = null, isFreePlan = false) {
   const encryptedToken = await encryptToken(accessToken);
-  const data = { accessToken: encryptedToken, isFreePlan };
-  if (workspaceName) data.workspaceName = workspaceName;
-  return prisma.clickUpConnection.upsert({
-    where: { shopDomain: shop },
-    update: data,
-    create: { shopDomain: shop, ...data },
-  });
-}
 
-export async function saveList(shop, listId, listName) {
-  const listConnections = [{ id: listId, name: listName, keyword: "" }];
-  return prisma.clickUpConnection.update({
-    where: { shopDomain: shop },
-    data: {
-      listId,
-      listName,
-      listConnections: JSON.stringify(listConnections),
+  const conn = await prisma.platformConnection.upsert({
+    where: {
+      shopDomain_provider: {
+        shopDomain: shop,
+        provider: "CLICKUP"
+      }
     },
+    update: {
+      encryptedAccessToken: encryptedToken,
+      isActive: true
+    },
+    create: {
+      shopDomain: shop,
+      provider: "CLICKUP",
+      encryptedAccessToken: encryptedToken,
+      isActive: true
+    }
   });
+
+  await prisma.clickUpMetadata.upsert({
+    where: { connectionId: conn.id },
+    update: {
+      workspaceId: "migrated_workspace",
+      workspaceName: workspaceName || "ClickUp Workspace",
+      isFreePlan: isFreePlan
+    },
+    create: {
+      connectionId: conn.id,
+      workspaceId: "migrated_workspace",
+      workspaceName: workspaceName || "ClickUp Workspace",
+      isFreePlan: isFreePlan
+    }
+  });
+
+  return conn;
 }
 
 export async function saveListConnections(shop, listConnections) {
-  const firstList = listConnections[0] || null;
-  return prisma.clickUpConnection.update({
-    where: { shopDomain: shop },
-    data: {
-      listId: firstList?.id || null,
-      listName: firstList?.name || null,
-      listConnections: JSON.stringify(listConnections),
-    },
+  const activeConn = await prisma.platformConnection.findFirst({
+    where: { shopDomain: shop, isActive: true },
   });
+
+  if (!activeConn) {
+    throw new Error("No active connection found for this shop");
+  }
+
+  const incomingIds = listConnections.map((c) => c.id).filter(Boolean);
+  await prisma.syncTarget.updateMany({
+    where: {
+      connectionId: activeConn.id,
+      targetResourceId: { notIn: incomingIds },
+    },
+    data: { isActive: false },
+  });
+
+  for (const target of listConnections) {
+    if (target.id) {
+      await prisma.syncTarget.upsert({
+        where: {
+          connectionId_targetResourceId: {
+            connectionId: activeConn.id,
+            targetResourceId: target.id,
+          },
+        },
+        update: {
+          targetResourceName: target.name || "",
+          keyword: target.keyword || null,
+          isActive: true,
+        },
+        create: {
+          connectionId: activeConn.id,
+          targetResourceId: target.id,
+          targetResourceName: target.name || "",
+          keyword: target.keyword || null,
+          isActive: true,
+        },
+      });
+    }
+  }
+
+  return activeConn;
 }
 
 export async function handleDowngradeToListLimit(shop, listLimit = 1) {
-  const conn = await prisma.clickUpConnection.findUnique({
-    where: { shopDomain: shop },
+  const activeConn = await prisma.platformConnection.findFirst({
+    where: { shopDomain: shop, isActive: true },
+    include: { syncTargets: { where: { isActive: true }, orderBy: { createdAt: "asc" } } }
   });
-  if (!conn || !conn.listConnections) return null;
+  if (!activeConn) return null;
 
-  try {
-    const listConns = JSON.parse(conn.listConnections);
-    if (listConns.length > listLimit) {
-      const kept = listConns.slice(0, listLimit);
-      const removed = listConns.slice(listLimit);
-      const removedNames = removed.map((c) => c.name).join(", ");
+  const activeTargets = activeConn.syncTargets;
+  if (activeTargets.length > listLimit) {
+    const removed = activeTargets.slice(listLimit);
+    const removedNames = removed.map((c) => c.targetResourceName).join(", ");
 
-      await prisma.clickUpConnection.update({
-        where: { shopDomain: shop },
-        data: {
-          listId: kept[0]?.id || null,
-          listName: kept[0]?.name || null,
-          listConnections: JSON.stringify(kept),
-        },
-      });
+    const removedIds = removed.map((c) => c.id);
+    await prisma.syncTarget.updateMany({
+      where: { id: { in: removedIds } },
+      data: { isActive: false }
+    });
 
-      // Log activity
-      logActivity(
-        shop,
-        "plan_cancelled",
-        `Plan limit check: kept ${listLimit} list(s). Removed extra list connections: ${removedNames}`
-      );
+    logActivity(
+      shop,
+      "plan_cancelled",
+      `Plan limit check: kept ${listLimit} list/board/database(s). Removed extra connections: ${removedNames}`
+    );
 
-      return removedNames;
-    }
-  } catch (e) {
-    console.error("Failed to handle downgrade list cleanup:", e);
+    return removedNames;
   }
   return null;
 }
 
 export async function disconnect(shop) {
-  return prisma.clickUpConnection.deleteMany({ where: { shopDomain: shop } });
-}
-
-// ---------------------------------------------------------------------------
-// Persistence helpers — OrderTask
-// ---------------------------------------------------------------------------
-
-export async function recordOrderTask(shop, shopifyOrderId, clickupTaskId, status = "synced", orderNumber = null) {
-  const data = { clickupTaskId, status };
-  if (orderNumber) data.orderNumber = orderNumber;
-
-  return prisma.orderTask.upsert({
-    where: {
-      shopDomain_shopifyOrderId: { shopDomain: shop, shopifyOrderId },
-    },
-    update: data,
-    create: { shopDomain: shop, shopifyOrderId, clickupTaskId, status, orderNumber },
-  });
-}
-
-export async function findOrderTask(shop, shopifyOrderId) {
-  return prisma.orderTask.findUnique({
-    where: {
-      shopDomain_shopifyOrderId: { shopDomain: shop, shopifyOrderId },
-    },
-  });
-}
-
-// Atomically claims an order slot before calling ClickUp.
-// Returns true if this caller won the race, false if another webhook already claimed it.
-export async function claimOrderSlot(shop, shopifyOrderId, orderNumber = null) {
-  try {
-    await prisma.orderTask.create({
-      data: { shopDomain: shop, shopifyOrderId, clickupTaskId: "pending", status: "pending", orderNumber },
-    });
-    return true;
-  } catch (e) {
-    // P2002 = Prisma unique constraint; 23505 = PostgreSQL native code (Neon adapter)
-    if (e.code === "P2002" || e.code === "23505") return false;
-    throw e;
-  }
-}
-
-export async function updateOrderTaskStatus(shop, shopifyOrderId, status) {
-  return prisma.orderTask.updateMany({
-    where: { shopDomain: shop, shopifyOrderId },
-    data: { status },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Webhook retry logic (Growth plan only)
-// ---------------------------------------------------------------------------
-
-export function scheduleRetry(shop, shopifyOrderId, listId, taskData, attempt = 1) {
-  const delay = attempt === 1 ? 60 * 1000 : 5 * 60 * 1000;
-
-  setTimeout(async () => {
-    try {
-      console.log(`Retrying task creation for order ${shopifyOrderId} (attempt ${attempt})...`);
-
-      const connection = await getConnection(shop);
-      if (!connection?.accessToken) {
-        console.error(`Retry failed: ClickUp not connected for shop ${shop}`);
-        return;
-      }
-
-      // Re-import dynamically to avoid circular dependencies
-      const { incrementOrderCount } = await import("./billing.server");
-
-      const task = await createTask(connection.accessToken, listId, taskData);
-
-      await recordOrderTask(shop, shopifyOrderId, task.id, "synced", taskData.orderNumber);
-      await incrementOrderCount(shop);
-
-      logActivity(
-        shop,
-        "order_synced",
-        `Order #${taskData.orderNumber} (${taskData.customerName}) synced to ClickUp after retry`,
-        shopifyOrderId,
-        task.id
-      );
-      console.log(`Retry successful: Created ClickUp task ${task.id} for order ${shopifyOrderId}`);
-    } catch (err) {
-      console.error(`Retry attempt ${attempt} failed for order ${shopifyOrderId}:`, err);
-
-      if (attempt < 2) {
-        logActivity(
-          shop,
-          "sync_retried",
-          `Order #${taskData.orderNumber} sync failed; retrying again in 5 minutes...`,
-          shopifyOrderId
-        );
-        scheduleRetry(shop, shopifyOrderId, listId, taskData, attempt + 1);
-      } else {
-        await recordOrderTask(shop, shopifyOrderId, "failed", "failed", taskData.orderNumber).catch(() => {});
-        logActivity(
-          shop,
-          "sync_failed",
-          `Order #${taskData.orderNumber} sync failed after all retries: ${err.message}`,
-          shopifyOrderId
-        );
-      }
-    }
-  }, delay);
+  return prisma.platformConnection.deleteMany({ where: { shopDomain: shop } });
 }
 
 export function scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, orderNumber, attempt = 1) {
@@ -415,21 +368,39 @@ export function scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, or
 
       const connection = await getConnection(shop);
       if (!connection?.accessToken) {
-        console.error(`Retry failed: ClickUp not connected for shop ${shop}`);
+        console.error(`Retry failed: Integration not connected for shop ${shop}`);
         return;
       }
 
-      await completeTask(connection.accessToken, clickupTaskId);
-      await updateOrderTaskStatus(shop, shopifyOrderId, "fulfilled");
+      const { ClickUpAdapter, MondayAdapter, NotionAdapter } = await import("./adapters/core.js");
+      let adapter;
+      const platform = connection.selectedPlatform || "clickup";
+      if (platform === "clickup") {
+        adapter = new ClickUpAdapter(connection.accessToken);
+      } else if (platform === "monday") {
+        adapter = new MondayAdapter(connection.accessToken);
+      } else if (platform === "notion") {
+        adapter = new NotionAdapter(connection.accessToken);
+      }
+
+      if (!adapter) {
+        throw new Error(`Unsupported selectedPlatform: ${platform}`);
+      }
+
+      await adapter.completeRecord(clickupTaskId);
+
+      await prisma.orderSyncRecord.updateMany({
+        where: { shopDomain: shop, shopifyOrderId },
+        data: { syncStatus: "fulfilled" }
+      });
 
       logActivity(
         shop,
         "order_fulfilled",
-        `Order #${orderNumber} marked complete in ClickUp after retry`,
+        `Order #${orderNumber} marked complete in ${platform === "clickup" ? "ClickUp" : platform === "monday" ? "Monday.com" : "Notion"} after retry`,
         shopifyOrderId,
         clickupTaskId
       );
-      console.log(`Retry successful: Completed ClickUp task ${clickupTaskId} for order ${shopifyOrderId}`);
     } catch (err) {
       console.error(`Fulfillment retry attempt ${attempt} failed for order ${shopifyOrderId}:`, err);
 
@@ -454,6 +425,7 @@ export function scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, or
     }
   }, delay);
 }
+
 
 // ---------------------------------------------------------------------------
 // Activity log — fire-and-forget, never blocks callers

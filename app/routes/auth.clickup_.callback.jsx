@@ -1,3 +1,4 @@
+/* global process */
 import { redirect } from "react-router";
 import {
   exchangeClickUpCode,

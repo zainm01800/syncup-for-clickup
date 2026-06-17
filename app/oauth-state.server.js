@@ -1,3 +1,4 @@
+/* global globalThis */
 // Signs and verifies the OAuth `state` parameter for the ClickUp connect flow.
 //
 // The shop is bound into an HMAC-signed, time-limited token that is minted ONLY

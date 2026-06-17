@@ -1,3 +1,4 @@
+/* global globalThis */
 // AES-256-GCM encryption using the Web Crypto API (globalThis.crypto.subtle).
 // Available in Node.js 19+ and modern browsers — requires no node: imports,
 // which avoids Vite's commonjs--resolver flagging this as a server-only module
