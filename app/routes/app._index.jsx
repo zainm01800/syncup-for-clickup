@@ -457,7 +457,7 @@ export default function Index() {
   };
 
   // If the trial has expired or subscription is cancelled/expired, show a full-page upgrade prompt
-  const showFullPageUpgrade = !isTrialOrSubscriptionActive;
+  const showFullPageUpgrade = connected && !isTrialOrSubscriptionActive;
 
   return (
     <>
@@ -925,19 +925,164 @@ export default function Index() {
                   {selectedTool === "clickup" && (
                     <section style={styles.card}>
                       <h2 style={styles.cardTitle}>Connect ClickUp Workspace</h2>
-                      <p style={styles.cardText}>
-                        Connect ClickUp to start syncing new orders into a list of your
-                        choice. New orders become tasks, fulfilled orders get marked
-                        complete — automatically.
-                      </p>
-                      <a
-                        href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
-                        target="_top"
-                        style={{ ...styles.primaryButton, display: "inline-flex", alignItems: "center", gap: 8 }}
-                      >
-                        <span>Connect ClickUp</span>
-                        <span style={{ fontSize: 11 }}>&rarr;</span>
-                      </a>
+                      
+                      {!isTrialOrSubscriptionActive ? (
+                        <div>
+                          <p style={{ ...styles.cardText, marginBottom: 24 }}>
+                            SyncUp has paused task creation because you do not have an active subscription. Choose a plan below to unlock ClickUp connection and start syncing.
+                          </p>
+
+                          {/* Pricing Cards Grid */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch" style={{ marginTop: 24 }}>
+                            {["standard", "growth", "pro"].map((key) => {
+                              const planKey = `${key}_${billingInterval}`;
+                              const plan = PLANS[planKey];
+                              if (!plan) return null;
+                              const isHighlighted = key === "growth";
+                              
+                              const overlayPlanSpecs = {
+                                standard: {
+                                  badge: "Best for Starters",
+                                  priceDesc: "$29.99/mo",
+                                  annualPriceDesc: "$19.99/mo",
+                                  billedDesc: "Billed annually as $239",
+                                  regMonthly: "$49.99",
+                                  regAnnual: "$399",
+                                },
+                                growth: {
+                                  badge: "Most Popular",
+                                  priceDesc: "$49.99/mo",
+                                  annualPriceDesc: "$34.99/mo",
+                                  billedDesc: "Billed annually as $419",
+                                  regMonthly: "$79.99",
+                                  regAnnual: "$699",
+                                },
+                                pro: {
+                                  badge: "Concierge Setup Included",
+                                  priceDesc: "$99.99/mo",
+                                  annualPriceDesc: "$69.99/mo",
+                                  billedDesc: "Billed annually as $839",
+                                  regMonthly: "$149.99",
+                                  regAnnual: "$1199",
+                                },
+                              };
+                              const spec = overlayPlanSpecs[key];
+
+                              const displayPrice = billingInterval === "annual" 
+                                ? spec.annualPriceDesc 
+                                : spec.priceDesc;
+
+                              const regularPrice = billingInterval === "annual"
+                                ? spec.regAnnual
+                                : spec.regMonthly;
+
+                              return (
+                                <div
+                                  key={key}
+                                  className={`bg-zinc-950/45 border rounded-2xl p-6 flex flex-col justify-between transition-all duration-300 relative ${
+                                    isHighlighted 
+                                      ? "border-emerald-500/40 shadow-xl shadow-emerald-950/15 hover:border-emerald-500/60" 
+                                      : "border-zinc-800 hover:border-zinc-700"
+                                  }`}
+                                  style={{ border: isHighlighted ? "1px solid rgba(16, 185, 129, 0.4)" : `1px solid ${C.border}`, background: "#0f0f0f" }}
+                                >
+                                  {isHighlighted && (
+                                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
+                                      {spec.badge}
+                                    </div>
+                                  )}
+
+                                  <div>
+                                    <div className="mb-4">
+                                      <span className="text-zinc-500 text-[10px] font-semibold tracking-wider uppercase block mb-1">
+                                        {key} tier
+                                      </span>
+                                      <h3 className="text-base font-bold text-white tracking-tight">{plan.name}</h3>
+                                    </div>
+
+                                    {/* Price */}
+                                    <div className="mb-6">
+                                      <div className="flex items-baseline flex-wrap gap-1">
+                                        {regularPrice && (
+                                          <span className="text-xs text-zinc-500 line-through mr-1 font-medium">
+                                            {regularPrice}
+                                          </span>
+                                        )}
+                                        <span className="text-2xl font-extrabold text-white tracking-tight">
+                                          {displayPrice.split("/")[0]}
+                                        </span>
+                                        <span className="text-zinc-400 text-xs font-medium">
+                                          /{displayPrice.split("/")[1]}
+                                        </span>
+                                      </div>
+
+                                      {/* Annual details */}
+                                      {billingInterval === "annual" && (
+                                        <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
+                                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                          {spec.billedDesc} ({spec.priceDesc} equivalent)
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Divider */}
+                                    <div className="h-px bg-zinc-800/80 mb-5" style={{ background: C.border }}></div>
+
+                                    {/* Features */}
+                                    <ul className="space-y-3 mb-6 text-xs text-zinc-300" style={{ listStyle: "none", padding: 0 }}>
+                                      {getTranslatedFeatures(plan.features, "clickup").map((feat) => (
+                                        <li key={feat} className="flex items-start">
+                                          <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
+                                          <span className="leading-snug">{feat}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+
+                                  {/* Submit action */}
+                                  <Form method="post" action={`/app/billing?platform=clickup`} target="_top" className="mt-auto">
+                                    <input type="hidden" name="intent" value="upgrade" />
+                                    <input type="hidden" name="plan" value={planKey} />
+                                    <button
+                                      type="submit"
+                                      className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
+                                        isHighlighted
+                                          ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
+                                          : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
+                                      }`}
+                                      style={{
+                                        border: isHighlighted ? "none" : `1px solid ${C.border}`,
+                                        background: isHighlighted ? C.accent : "#1a1a1a",
+                                        color: isHighlighted ? "#03251c" : C.text,
+                                        width: "100%",
+                                      }}
+                                      disabled={isSubmitting}
+                                    >
+                                      {isSubmitting ? "Connecting..." : `Select ${plan.name.split(" ")[0]}`}
+                                    </button>
+                                  </Form>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p style={styles.cardText}>
+                            Connect ClickUp to start syncing new orders into a list of your
+                            choice. New orders become tasks, fulfilled orders get marked
+                            complete — automatically.
+                          </p>
+                          <a
+                            href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
+                            target="_top"
+                            style={{ ...styles.primaryButton, display: "inline-flex", alignItems: "center", gap: 8 }}
+                          >
+                            <span>Connect ClickUp</span>
+                            <span style={{ fontSize: 11 }}>&rarr;</span>
+                          </a>
+                        </>
+                      )}
                     </section>
                   )}
 
