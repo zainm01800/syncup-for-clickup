@@ -98,6 +98,7 @@ export const loader = async ({ request }) => {
 
   return {
     shop,
+    email: session.email || null,
     clickupConnectState: await signState(shop),
     connected: Boolean(connection?.accessToken),
     workspaceName: connection?.workspaceName || null,
@@ -145,6 +146,19 @@ export const action = async ({ request }) => {
   const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "join_waitlist") {
+    const platform = formData.get("platform");
+    const waitlistEmail = formData.get("email") || "";
+    await prisma.activityLog.create({
+      data: {
+        shopDomain: shop,
+        eventType: "waitlist_joined",
+        description: `Joined ${platform === "monday" ? "Monday.com" : "Notion"} integration private beta waitlist (${waitlistEmail})`
+      }
+    });
+    return { ok: true, joinedWaitlist: platform, waitlistEmail };
+  }
 
   if (intent === "disconnect") {
     await disconnect(shop);
@@ -381,6 +395,7 @@ const BANNER_COLORS = {
 export default function Index() {
   const {
     shop,
+    email,
     clickupConnectState,
     connected,
     workspaceName,
@@ -413,6 +428,7 @@ export default function Index() {
 
   const [billingInterval, setBillingInterval] = useState("monthly"); // monthly or annual
   const [fieldMappingsList, setFieldMappingsList] = useState(fieldMappings || []);
+  const [selectedTool, setSelectedTool] = useState(null);
 
   const statusCfg = SYNC_STATUS_CONFIG[syncStatus];
 
@@ -478,6 +494,69 @@ export default function Index() {
           background: ${C.accent};
           color: #03251c;
           border-color: ${C.accent};
+        }
+        .su-platform-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 16px;
+          margin-top: 16px;
+          margin-bottom: 24px;
+        }
+        @media (max-width: 600px) {
+          .su-platform-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+        .su-platform-card {
+          background: #1a1a1a;
+          border: 1px solid ${C.border};
+          border-radius: 14px;
+          padding: 24px 16px;
+          text-align: center;
+          cursor: pointer;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          position: relative;
+        }
+        .su-platform-card:hover {
+          transform: translateY(-2px);
+        }
+        .su-platform-card.clickup:hover, .su-platform-card.clickup.selected {
+          border-color: #7b61ff;
+          box-shadow: 0 4px 20px rgba(123, 97, 255, 0.15);
+          background: rgba(123, 97, 255, 0.03);
+        }
+        .su-platform-card.monday:hover, .su-platform-card.monday.selected {
+          border-color: #ff3d57;
+          box-shadow: 0 4px 20px rgba(255, 61, 87, 0.15);
+          background: rgba(255, 61, 87, 0.03);
+        }
+        .su-platform-card.notion:hover, .su-platform-card.notion.selected {
+          border-color: #ffffff;
+          box-shadow: 0 4px 20px rgba(255, 255, 255, 0.15);
+          background: rgba(255, 255, 255, 0.03);
+        }
+        .su-platform-badge {
+          font-size: 9px;
+          font-weight: 700;
+          text-transform: uppercase;
+          padding: 2px 8px;
+          border-radius: 12px;
+          letter-spacing: 0.05em;
+        }
+        .su-platform-badge.live {
+          color: ${C.accent};
+          background: rgba(0, 196, 140, 0.12);
+          border: 1px solid rgba(0, 196, 140, 0.3);
+        }
+        .su-platform-badge.coming-soon {
+          color: #ff9900;
+          background: rgba(255, 153, 0, 0.12);
+          border: 1px solid rgba(255, 153, 0, 0.3);
         }
       `}</style>
 
@@ -772,21 +851,145 @@ export default function Index() {
 
               {/* SECTION 3 — CLICKUP CONNECTION */}
               {!connected ? (
-                <section style={styles.card}>
-                  <h2 style={styles.cardTitle}>Connect your ClickUp account</h2>
-                  <p style={styles.cardText}>
-                    Connect ClickUp to start syncing new orders into a list of your
-                    choice. New orders become tasks, fulfilled orders get marked
-                    complete — automatically. Notion and Monday integrations are coming soon!
-                  </p>
-                  <a
-                    href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
-                    target="_top"
-                    style={styles.primaryButton}
-                  >
-                    Connect ClickUp
-                  </a>
-                </section>
+                <div>
+                  <section style={{ ...styles.card, marginBottom: 24 }}>
+                    <h2 style={{ ...styles.cardTitle, marginTop: 0, textAlign: "center" }}>Choose your Workspace Tool</h2>
+                    <p style={{ ...styles.cardText, textAlign: "center", marginBottom: 24 }}>
+                      Select the project management platform you want to sync your Shopify orders to.
+                    </p>
+
+                    <div className="su-platform-grid">
+                      {/* ClickUp */}
+                      <button
+                        type="button"
+                        className={`su-platform-card clickup ${selectedTool === "clickup" ? "selected" : ""}`}
+                        onClick={() => setSelectedTool("clickup")}
+                        style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
+                      >
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                          <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                              <path d="M5 9L12 3L19 9" stroke="#7b61ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                              <path d="M12 14C9.5 14 7.5 16 7.5 18.5C7.5 20.5 9 21 12 21C15 21 16.5 20.5 16.5 18.5C16.5 16 14.5 14 12 14Z" fill="#7b61ff" />
+                            </svg>
+                          </div>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>ClickUp</span>
+                        </div>
+                        <span className="su-platform-badge live">Live</span>
+                      </button>
+
+                      {/* Monday.com */}
+                      <button
+                        type="button"
+                        className={`su-platform-card monday ${selectedTool === "monday" ? "selected" : ""}`}
+                        onClick={() => setSelectedTool("monday")}
+                        style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
+                      >
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                          <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
+                              <rect x="5" y="10" width="30" height="6" rx="3" fill="#ff3d57" />
+                              <rect x="5" y="20" width="30" height="6" rx="3" fill="#ffcb00" />
+                              <rect x="5" y="30" width="30" height="6" rx="3" fill="#00cff4" />
+                            </svg>
+                          </div>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Monday.com</span>
+                        </div>
+                        <span className="su-platform-badge coming-soon">Beta</span>
+                      </button>
+
+                      {/* Notion */}
+                      <button
+                        type="button"
+                        className={`su-platform-card notion ${selectedTool === "notion" ? "selected" : ""}`}
+                        onClick={() => setSelectedTool("notion")}
+                        style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
+                      >
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                          <div style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3" y="3" width="18" height="18" rx="4" />
+                              <path d="M9 17V7l6 10V7" />
+                            </svg>
+                          </div>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Notion</span>
+                        </div>
+                        <span className="su-platform-badge coming-soon">Beta</span>
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* Dynamic Panels depending on selectedPlatform */}
+                  {selectedTool === "clickup" && (
+                    <section style={styles.card}>
+                      <h2 style={styles.cardTitle}>Connect ClickUp Workspace</h2>
+                      <p style={styles.cardText}>
+                        Connect ClickUp to start syncing new orders into a list of your
+                        choice. New orders become tasks, fulfilled orders get marked
+                        complete — automatically.
+                      </p>
+                      <a
+                        href={`/auth/clickup?state=${encodeURIComponent(clickupConnectState)}`}
+                        target="_top"
+                        style={{ ...styles.primaryButton, display: "inline-flex", alignItems: "center", gap: 8 }}
+                      >
+                        <span>Connect ClickUp</span>
+                        <span style={{ fontSize: 11 }}>&rarr;</span>
+                      </a>
+                    </section>
+                  )}
+
+                  {(selectedTool === "monday" || selectedTool === "notion") && (
+                    <section style={styles.card}>
+                      <h2 style={styles.cardTitle}>
+                        Join {selectedTool === "monday" ? "Monday.com" : "Notion"} Beta Waitlist
+                      </h2>
+                      
+                      {actionData?.joinedWaitlist === selectedTool ? (
+                        <div style={{ ...styles.successBanner, marginTop: 12 }}>
+                          ✓ Thanks! You've successfully joined the waitlist for {selectedTool === "monday" ? "Monday.com" : "Notion"}. We'll email you at <strong>{actionData.waitlistEmail}</strong> once it's available for testing.
+                        </div>
+                      ) : (
+                        <>
+                          <p style={styles.cardText}>
+                            The {selectedTool === "monday" ? "Monday.com" : "Notion"} integration is currently under active development. Enter your email below to request early beta access and be notified when it goes live.
+                          </p>
+                          <Form method="post" style={{ ...styles.form, marginTop: 16 }}>
+                            <input type="hidden" name="intent" value="join_waitlist" />
+                            <input type="hidden" name="platform" value={selectedTool} />
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              <label style={styles.formLabel} htmlFor="waitlist_email">Email address</label>
+                              <input
+                                id="waitlist_email"
+                                name="email"
+                                type="email"
+                                required
+                                placeholder="e.g. merchant@store.com"
+                                defaultValue={email || ""}
+                                style={styles.input}
+                              />
+                            </div>
+                            <button
+                              type="submit"
+                              style={{ ...styles.primaryButton, width: "100%", marginTop: 8 }}
+                              disabled={isSubmitting}
+                            >
+                              {isSubmitting ? "Joining..." : `Join ${selectedTool === "monday" ? "Monday.com" : "Notion"} Waitlist`}
+                            </button>
+                          </Form>
+                        </>
+                      )}
+                    </section>
+                  )}
+
+                  {!selectedTool && (
+                    <section style={{ ...styles.card, textAlign: "center", padding: "40px 24px" }}>
+                      <p style={{ ...styles.cardText, margin: 0 }}>
+                        Select one of the workspace tools above to begin configuration.
+                      </p>
+                    </section>
+                  )}
+                </div>
               ) : (
                 <section style={styles.card}>
                   <div style={styles.cardHeaderRow}>

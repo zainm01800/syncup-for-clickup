@@ -41,6 +41,7 @@ model ClickUpConnection {
   listConnections String?  @map("list_connections") // Serialized JSON array of { id, name, keyword }
   fieldMappings   String?  @map("field_mappings")    // Serialized JSON array of { shopifyField, clickupFieldId, clickupFieldType }
   isFreePlan      Boolean  @default(false) @map("is_free_plan")
+  selectedPlatform String  @default("clickup") @map("selected_platform")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
