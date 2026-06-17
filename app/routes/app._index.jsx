@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Form, useLoaderData, useActionData, useNavigation, Link } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, registerWebhooks } from "../shopify.server";
@@ -28,7 +28,61 @@ export const loader = async ({ request }) => {
   let lists = [];
   let listError = null;
 
+  let healthStatus = connection?.healthStatus || "healthy";
   if (connection?.accessToken) {
+    // Throttled connection health check (run at most once every 5 minutes)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    if (!connection.lastHealthCheck || new Date(connection.lastHealthCheck) < fiveMinutesAgo) {
+      try {
+        let healthy = false;
+        if (connection.selectedPlatform === "clickup") {
+          const res = await fetch("https://api.clickup.com/api/v2/user", {
+            headers: { Authorization: connection.accessToken },
+          });
+          healthy = res.status === 200;
+        } else if (connection.selectedPlatform === "monday") {
+          const res = await fetch("https://api.monday.com/v2", {
+            method: "POST",
+            headers: {
+              Authorization: connection.accessToken,
+              "Content-Type": "application/json",
+              "API-Version": "2023-10",
+            },
+            body: JSON.stringify({ query: "{ me { id } }" }),
+          });
+          healthy = res.status === 200;
+        } else if (connection.selectedPlatform === "notion") {
+          const res = await fetch("https://api.notion.com/v1/users/me", {
+            headers: {
+              Authorization: `Bearer ${connection.accessToken}`,
+              "Notion-Version": "2022-06-28",
+            },
+          });
+          healthy = res.status === 200;
+        }
+
+        healthStatus = healthy ? "healthy" : "error";
+        await prisma.platformConnection.update({
+          where: { id: connection.id },
+          data: {
+            healthStatus,
+            lastHealthCheck: new Date(),
+          },
+        });
+      } catch (err) {
+        console.error("Health check failed:", err);
+        healthStatus = "error";
+        try {
+          await prisma.platformConnection.update({
+            where: { id: connection.id },
+            data: { healthStatus: "error", lastHealthCheck: new Date() },
+          });
+        } catch (dbErr) {
+          console.error("Failed to update health check error in DB:", dbErr);
+        }
+      }
+    }
+
     try {
       const { IntegrationFactory } = await import("../adapters/factory");
       const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
@@ -97,6 +151,7 @@ export const loader = async ({ request }) => {
     email: session.email || null,
     clickupConnectState: await signState(shop),
     connected: Boolean(connection?.accessToken),
+    healthStatus,
     selectedPlatform: connection?.selectedPlatform || "clickup",
     workspaceName: connection?.workspaceName || null,
     listConnections: connection?.listConnections || [],
@@ -104,6 +159,10 @@ export const loader = async ({ request }) => {
     listError,
     clickupFields,
     fieldMappings,
+    // Merchant-configurable sync settings
+    taskNameTemplate: subscription.taskNameTemplate || "",
+    syncTrigger: subscription.syncTrigger || "payment_confirmed",
+    subtasksEnabled: subscription.subtasksEnabled || false,
     subscription: {
       planName: subscription.planName,
       status: subscription.status,
@@ -399,6 +458,38 @@ export const action = async ({ request }) => {
     }
   }
 
+  if (intent === "save_settings") {
+    try {
+      const rawTemplate = formData.get("taskNameTemplate") || "";
+      const syncTrigger = formData.get("syncTrigger") || "payment_confirmed";
+      const subtasksEnabled = formData.get("subtasksEnabled") === "true";
+
+      const validTriggers = ["payment_confirmed", "on_create", "on_fulfillment_start"];
+      if (!validTriggers.includes(syncTrigger)) {
+        return { ok: false, error: "Invalid sync trigger value." };
+      }
+
+      const sub = await getOrCreateSubscription(shop);
+      const isGrowthOrPro =
+        sub.planName.startsWith("growth") ||
+        sub.planName.startsWith("pro") ||
+        sub.planName === "trial";
+
+      await prisma.subscription.update({
+        where: { shopDomain: shop },
+        data: {
+          taskNameTemplate: rawTemplate.trim() || null,
+          syncTrigger,
+          subtasksEnabled: isGrowthOrPro ? subtasksEnabled : false,
+        },
+      });
+
+      return { ok: true, savedSettings: true };
+    } catch (e) {
+      return { ok: false, error: `Failed to save settings: ${e.message}` };
+    }
+  }
+
   return { ok: false, error: "Unknown action." };
 };
 
@@ -476,12 +567,16 @@ export default function Index() {
     shop,
     clickupConnectState,
     connected,
+    healthStatus,
     selectedPlatform,
     workspaceName,
     listConnections,
     lists,
     clickupFields,
     fieldMappings,
+    taskNameTemplate,
+    syncTrigger,
+    subtasksEnabled,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -507,6 +602,155 @@ export default function Index() {
   const [billingInterval, setBillingInterval] = useState("monthly"); // monthly or annual
   const [fieldMappingsList, setFieldMappingsList] = useState(fieldMappings || []);
   const [selectedTool, setSelectedTool] = useState(null);
+  const [localTaskTemplate, setLocalTaskTemplate] = useState(taskNameTemplate || "");
+  const [localSyncTrigger, setLocalSyncTrigger] = useState(syncTrigger || "payment_confirmed");
+  const [localSubtasks, setLocalSubtasks] = useState(subtasksEnabled || false);
+
+  const isFullySetup = connected && listConnections.length > 0;
+  const [wizardStep, setWizardStep] = useState(() => {
+    if (isFullySetup) return "dashboard";
+    if (connected) return "select";
+    if (selectedTool) return "connect";
+    return "choose";
+  });
+
+  useEffect(() => {
+    if (connected && listConnections.length > 0) {
+      setWizardStep("dashboard");
+    } else if (connected && listConnections.length === 0) {
+      setWizardStep("select");
+    } else if (!connected) {
+      if (selectedTool) {
+        setWizardStep("connect");
+      } else {
+        setWizardStep("choose");
+      }
+    }
+  }, [connected, listConnections, selectedTool]);
+
+  useEffect(() => {
+    if (actionData?.saved) {
+      setWizardStep("done");
+    }
+  }, [actionData]);
+
+  const applyPreset = (presetName) => {
+    let matchedMappings = [];
+    clickupFields.forEach((field) => {
+      const fieldNameLower = field.name.toLowerCase();
+      let sourceField = "";
+
+      if (presetName === "basic") {
+        if (fieldNameLower.includes("number") || fieldNameLower === "order") {
+          sourceField = "order_number";
+        } else if (fieldNameLower.includes("name") || fieldNameLower.includes("customer")) {
+          sourceField = "customer_name";
+        } else if (fieldNameLower.includes("total") || fieldNameLower.includes("price")) {
+          sourceField = "total_price";
+        }
+      } else if (presetName === "customer") {
+        if (fieldNameLower.includes("number") || fieldNameLower === "order") {
+          sourceField = "order_number";
+        } else if (fieldNameLower.includes("name") || fieldNameLower.includes("customer")) {
+          sourceField = "customer_name";
+        } else if (fieldNameLower.includes("email")) {
+          sourceField = "customer_email";
+        } else if (fieldNameLower.includes("phone") || fieldNameLower.includes("tel")) {
+          sourceField = "customer_phone";
+        } else if (fieldNameLower.includes("address") || fieldNameLower.includes("ship to")) {
+          sourceField = "shipping_address";
+        } else if (fieldNameLower.includes("total") || fieldNameLower.includes("price")) {
+          sourceField = "total_price";
+        }
+      } else if (presetName === "financial") {
+        if (fieldNameLower.includes("number") || fieldNameLower === "order") {
+          sourceField = "order_number";
+        } else if (fieldNameLower.includes("subtotal")) {
+          sourceField = "subtotal_price";
+        } else if (fieldNameLower.includes("shipping")) {
+          sourceField = "shipping_price";
+        } else if (fieldNameLower.includes("total") || fieldNameLower.includes("price")) {
+          sourceField = "total_price";
+        } else if (fieldNameLower.includes("note") || fieldNameLower.includes("comment")) {
+          sourceField = "order_notes";
+        }
+      }
+
+      if (sourceField) {
+        matchedMappings.push({
+          shopifySourceField: sourceField,
+          clickupFieldId: field.id,
+          clickupFieldName: field.name,
+          clickupFieldType: field.type,
+        });
+      }
+    });
+
+    setFieldMappingsList(matchedMappings);
+  };
+
+  const renderProgressBar = () => {
+    const steps = [
+      { key: "choose", label: "Choose Tool" },
+      { key: "connect", label: "Connect Account" },
+      { key: "select", label: "Select Destination" },
+      { key: "done", label: "Get Started" }
+    ];
+    const currentStepIndex = steps.findIndex(s => s.key === wizardStep);
+    if (wizardStep === "dashboard") return null;
+    return (
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, position: "relative" }}>
+          {steps.map((s, idx) => {
+            const isActive = s.key === wizardStep;
+            const isCompleted = currentStepIndex > idx;
+            return (
+              <div key={s.key} style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1, position: "relative" }}>
+                {idx > 0 && (
+                  <div style={{
+                    position: "absolute",
+                    left: "-50%",
+                    right: "50%",
+                    top: 12,
+                    height: 2,
+                    background: currentStepIndex >= idx ? C.accent : "#2a2a2a",
+                    zIndex: 1,
+                  }} />
+                )}
+                <div style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: "50%",
+                  background: isCompleted ? C.accent : isActive ? "#151515" : "#1a1a1a",
+                  border: `2px solid ${isCompleted || isActive ? C.accent : C.border}`,
+                  color: isCompleted ? "#03251c" : isActive ? C.accent : C.muted,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 11,
+                  fontWeight: 800,
+                  zIndex: 2,
+                  transition: "all 0.3s ease",
+                  boxShadow: isActive ? `0 0 10px ${C.accent}66` : "none",
+                }}>
+                  {isCompleted ? "✓" : idx + 1}
+                </div>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: isActive ? 700 : 500,
+                  color: isActive ? C.text : C.muted,
+                  marginTop: 6,
+                  textAlign: "center",
+                }}>
+                  {s.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   const statusCfg = SYNC_STATUS_CONFIG[syncStatus];
 
@@ -637,6 +881,17 @@ export default function Index() {
           background: rgba(255, 153, 0, 0.12);
           border: 1px solid rgba(255, 153, 0, 0.3);
         }
+        .su-dashboard-grid {
+          display: grid;
+          grid-template-columns: 1.25fr 0.75fr;
+          gap: 20px;
+          align-items: start;
+        }
+        @media (max-width: 900px) {
+          .su-dashboard-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
       `}</style>
 
       <div style={styles.page}>
@@ -710,6 +965,11 @@ export default function Index() {
           {actionData?.sentTestTask && (
             <div style={{ ...styles.successBanner, marginBottom: 16 }}>
               {`✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`}
+            </div>
+          )}
+          {actionData?.savedSettings && (
+            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
+              ✓ Sync settings saved successfully.
             </div>
           )}
           {removedLists && (
@@ -896,43 +1156,12 @@ export default function Index() {
               </div>
             </section>
           ) : (
-            <>
-              {/* SECTION 1 — PLAN STATUS (active paid/trial merchants only) */}
-              <section style={{ ...styles.card, marginBottom: 16 }}>
-                <div style={styles.planRow} className="su-plan-row">
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={styles.planLabel}>Current plan</div>
-                    <div style={styles.planName}>
-                      {getPlanDisplayName(subscription.planName)}
-                      {subscription.planName !== "trial" && (
-                        <span style={styles.paidBadge}>Active</span>
-                      )}
-                    </div>
-                    {subscription.planName === "trial" ? (
-                      <div style={styles.usageText}>
-                        Your 7-day trial ends on {subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : ""}
-                      </div>
-                    ) : (
-                      <div style={styles.usageText}>
-                        Billing cycle started on {subscription.billingCycleStart ? new Date(subscription.billingCycleStart).toLocaleDateString() : ""}
-                      </div>
-                    )}
-                  </div>
-                  <Link
-                    to={`/app/billing?platform=${selectedPlatform}`}
-                    style={styles.managePlanButton}
-                    className="su-plan-btn"
-                  >
-                    Manage billing
-                  </Link>
-                </div>
-              </section>
-
-              {/* SECTION 3 — INTEGRATION SETUP WIZARD */}
-              {!connected ? (
+            <>{wizardStep !== "dashboard" ? (
                 <div>
-                  {selectedTool === null ? (
-                    /* STEP 1: WELCOME & TOOL SELECTOR GRID */
+                  {renderProgressBar()}
+
+                  {/* Step 1: Choose Tool */}
+                  {wizardStep === "choose" && (
                     <section style={{ ...styles.card, marginBottom: 24 }}>
                       <h2 style={{ ...styles.cardTitle, marginTop: 0, textAlign: "center" }}>Choose your Workspace Tool</h2>
                       <p style={{ ...styles.cardText, textAlign: "center", marginBottom: 24 }}>
@@ -944,7 +1173,10 @@ export default function Index() {
                         <button
                           type="button"
                           className="su-platform-card clickup"
-                          onClick={() => setSelectedTool("clickup")}
+                          onClick={() => {
+                            setSelectedTool("clickup");
+                            setWizardStep("connect");
+                          }}
                           style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
                         >
                           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
@@ -963,7 +1195,10 @@ export default function Index() {
                         <button
                           type="button"
                           className="su-platform-card monday"
-                          onClick={() => setSelectedTool("monday")}
+                          onClick={() => {
+                            setSelectedTool("monday");
+                            setWizardStep("connect");
+                          }}
                           style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
                         >
                           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
@@ -983,7 +1218,10 @@ export default function Index() {
                         <button
                           type="button"
                           className="su-platform-card notion"
-                          onClick={() => setSelectedTool("notion")}
+                          onClick={() => {
+                            setSelectedTool("notion");
+                            setWizardStep("connect");
+                          }}
                           style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
                         >
                           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
@@ -999,14 +1237,18 @@ export default function Index() {
                         </button>
                       </div>
                     </section>
-                  ) : (
-                    /* STEP 2: DEDICATED TOOL CONFIGURATION SCREEN */
+                  )}
+
+                  {/* Step 2: Connect platform */}
+                  {wizardStep === "connect" && (
                     <div>
-                      {/* Navigation Link Back */}
                       <div style={{ marginBottom: 16 }}>
                         <button
                           type="button"
-                          onClick={() => setSelectedTool(null)}
+                          onClick={() => {
+                            setSelectedTool(null);
+                            setWizardStep("choose");
+                          }}
                           style={{
                             background: "none",
                             color: C.accent,
@@ -1021,13 +1263,6 @@ export default function Index() {
                             backgroundColor: "rgba(0, 196, 140, 0.06)",
                             border: "1px solid rgba(0, 196, 140, 0.15)",
                             outline: "none",
-                            transition: "all 0.2s ease",
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor = "rgba(0, 196, 140, 0.12)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = "rgba(0, 196, 140, 0.06)";
                           }}
                         >
                           &larr; Back to tool selector
@@ -1270,472 +1505,874 @@ export default function Index() {
                       )}
                     </div>
                   )}
+
+                  {/* Step 3: Select destination */}
+                  {wizardStep === "select" && (
+                    <section style={styles.card}>
+                      <div style={styles.cardHeaderRow}>
+                        <div style={styles.statusRow}>
+                          <span style={styles.statusDot} />
+                          <span style={styles.statusText}>
+                            {workspaceName
+                              ? `Connected to ${workspaceName}`
+                              : `${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} connected`}
+                          </span>
+                        </div>
+                        <Form method="post" onSubmit={handleDisconnect}>
+                          <input type="hidden" name="intent" value="disconnect" />
+                          <button
+                            type="submit"
+                            style={styles.dangerButton}
+                            disabled={isSubmitting}
+                          >
+                            Disconnect
+                          </button>
+                        </Form>
+                      </div>
+
+                      <h2 style={styles.cardTitle}>Configure order {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections</h2>
+                      <p style={styles.cardText}>
+                        Select where new orders should sync. Growth plan merchants can configure up to 5 {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} with keyword filters to route orders automatically.
+                      </p>
+
+                      {lists.length === 0 ? (
+                        <p style={styles.cardText}>
+                          No {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} found in workspaces. Create one first then reload this page.
+                        </p>
+                      ) : (
+                        <Form method="post" style={styles.form}>
+                          <input type="hidden" name="intent" value="save_connections" />
+                          <input type="hidden" name="listConnectionsJson" value={JSON.stringify(conns)} />
+
+                          <div style={styles.connectionsContainer}>
+                            {conns.map((conn, index) => (
+                              <div key={index} style={styles.connectionRow}>
+                                <div style={{ flex: 2, minWidth: "150px" }}>
+                                  <label style={styles.formLabel} htmlFor={`list_${index}`}>
+                                    {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}
+                                  </label>
+                                  <select
+                                    id={`list_${index}`}
+                                    value={conn.id}
+                                    onChange={(e) => {
+                                      const selectedId = e.currentTarget.value;
+                                      const match = lists.find((l) => l.id === selectedId);
+                                      const updated = [...conns];
+                                      updated[index] = {
+                                        ...conn,
+                                        id: selectedId,
+                                        name: match ? match.name : "",
+                                      };
+                                      setConns(updated);
+                                    }}
+                                    style={styles.select}
+                                  >
+                                    <option value="">Select...</option>
+                                    {lists.map((list) => (
+                                      <option key={list.id} value={list.id}>
+                                        {list.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                {listLimit > 1 && (
+                                  <div style={{ flex: 1, minWidth: "120px" }}>
+                                    <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword / Tag</label>
+                                    <input
+                                      id={`kw_${index}`}
+                                      type="text"
+                                      placeholder="e.g. Shoes or Vendor"
+                                      value={conn.keyword || ""}
+                                      onChange={(e) => {
+                                        const updated = [...conns];
+                                        updated[index] = { ...conn, keyword: e.currentTarget.value };
+                                        setConns(updated);
+                                      }}
+                                      style={styles.input}
+                                      className="border border-zinc-800"
+                                    />
+                                  </div>
+                                )}
+
+                                {listLimit > 1 && conns.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConns(conns.filter((_, i) => i !== index))}
+                                    style={styles.removeConnButton}
+                                  >
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+
+                          {conns.length < listLimit && (
+                            <button
+                              type="button"
+                              onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "" }])}
+                              style={styles.addConnButton}
+                            >
+                              + Add connection
+                            </button>
+                          )}
+
+                          <button
+                            type="submit"
+                            style={styles.primaryButton}
+                            disabled={isSubmitting}
+                          >
+                            {isSubmitting ? "Saving…" : "Save connections"}
+                          </button>
+                        </Form>
+                      )}
+                    </section>
+                  )}
+
+                  {/* Step 4: Done */}
+                  {wizardStep === "done" && (
+                    <section style={{ ...styles.card, textAlign: "center", padding: "48px 32px" }}>
+                      <div style={{
+                        width: 64,
+                        height: 64,
+                        borderRadius: "50%",
+                        background: "rgba(0, 196, 140, 0.12)",
+                        border: `2px solid ${C.accent}`,
+                        color: C.accent,
+                        fontSize: 32,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginBottom: 20,
+                      }}>
+                        ✓
+                      </div>
+                      <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Configuration Complete!</h2>
+                      <p style={{ ...styles.cardText, maxWidth: 480, margin: "0 auto 24px", fontSize: 14, lineHeight: "1.6" }}>
+                        SyncUp is now fully configured and monitoring your Shopify store. New orders will automatically sync as tasks in your connected workspace!
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setWizardStep("dashboard")}
+                        style={styles.primaryButton}
+                      >
+                        Go to Dashboard &rarr;
+                      </button>
+                    </section>
+                  )}
                 </div>
               ) : (
-                <section style={styles.card}>
-                  <div style={styles.cardHeaderRow}>
-                    <div style={styles.statusRow}>
-                      <span style={styles.statusDot} />
-                      <span style={styles.statusText}>
-                        {workspaceName
-                          ? `Connected to ${workspaceName}`
-                          : `${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} connected`}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="send_test_task" />
-                        <button
-                          type="submit"
-                          className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 cursor-pointer shadow shadow-emerald-500/10"
-                          disabled={isSubmitting}
-                          style={{ border: "none", color: "#03251c" }}
-                        >
-                          Send Test Task
-                        </button>
-                      </Form>
-
-                      <Form method="post" onSubmit={handleDisconnect}>
-                        <input type="hidden" name="intent" value="disconnect" />
-                        <button
-                          type="submit"
-                          style={styles.dangerButton}
-                          disabled={isSubmitting}
-                        >
-                          Disconnect
-                        </button>
-                      </Form>
-                    </div>
-                  </div>
-
-                  {actionData?.saved && (
-                    <div style={styles.successBanner}>
-                      ✓ Connections saved successfully.
-                    </div>
-                  )}
-
-                  <h2 style={styles.cardTitle}>Configure order {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections</h2>
-                  <p style={styles.cardText}>
-                    Select where new orders should sync. Growth plan merchants can configure up to 5 {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} with keyword filters to route orders automatically.
-                  </p>
-
-                  {lists.length === 0 ? (
-                    <p style={styles.cardText}>
-                      No {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} found in your {selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} workspaces. Create one first then reload this page.
-                    </p>
-                  ) : (
-                    <Form method="post" style={styles.form}>
-                      <input type="hidden" name="intent" value="save_connections" />
-                      <input type="hidden" name="listConnectionsJson" value={JSON.stringify(conns)} />
-
-                      <div style={styles.connectionsContainer}>
-                        {conns.map((conn, index) => (
-                          <div key={index} style={styles.connectionRow}>
-                            <div style={{ flex: 2, minWidth: "150px" }}>
-                              <label style={styles.formLabel} htmlFor={`list_${index}`}>
-                                {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}
-                              </label>
-                              <select
-                                id={`list_${index}`}
-                                value={conn.id}
-                                onChange={(e) => {
-                                  const selectedId = e.currentTarget.value;
-                                  const match = lists.find((l) => l.id === selectedId);
-                                  const updated = [...conns];
-                                  updated[index] = {
-                                    ...conn,
-                                    id: selectedId,
-                                    name: match ? match.name : "",
-                                  };
-                                  setConns(updated);
-                                }}
-                                style={styles.select}
-                              >
-                                <option value="">Select...</option>
-                                {lists.map((list) => (
-                                  <option key={list.id} value={list.id}>
-                                    {list.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-
-                            {listLimit > 1 && (
-                              <div style={{ flex: 1, minWidth: "120px" }}>
-                                <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword / Tag</label>
-                                <input
-                                  id={`kw_${index}`}
-                                  type="text"
-                                  placeholder="e.g. Shoes or Vendor"
-                                  value={conn.keyword || ""}
-                                  onChange={(e) => {
-                                    const updated = [...conns];
-                                    updated[index] = { ...conn, keyword: e.currentTarget.value };
-                                    setConns(updated);
-                                  }}
-                                  style={styles.input}
-                                  className="border border-zinc-800"
-                                />
-                              </div>
-                            )}
-
-                            {listLimit > 1 && conns.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => setConns(conns.filter((_, i) => i !== index))}
-                                style={styles.removeConnButton}
-                              >
-                                Remove
-                              </button>
-                            )}
+                /* OPERATIONAL DASHBOARD: Two-Column Layout */
+                <div>
+                  {/* SECTION 1 — PLAN STATUS (active paid/trial merchants only) */}
+                  <section style={{ ...styles.card, marginBottom: 20 }}>
+                    <div style={styles.planRow} className="su-plan-row">
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={styles.planLabel}>Current plan</div>
+                        <div style={styles.planName}>
+                          {getPlanDisplayName(subscription.planName)}
+                          {subscription.planName !== "trial" && (
+                            <span style={styles.paidBadge}>Active</span>
+                          )}
+                        </div>
+                        {subscription.planName === "trial" ? (
+                          <div style={styles.usageText}>
+                            Your 7-day trial ends on {subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : ""}
                           </div>
-                        ))}
+                        ) : (
+                          <div style={styles.usageText}>
+                            Billing cycle started on {subscription.billingCycleStart ? new Date(subscription.billingCycleStart).toLocaleDateString() : ""}
+                          </div>
+                        )}
                       </div>
-
-                      {conns.length < listLimit && (
-                        <button
-                          type="button"
-                          onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "" }])}
-                          style={styles.addConnButton}
-                        >
-                          + Add connection
-                        </button>
-                      )}
-
-                      <button
-                        type="submit"
-                        style={styles.primaryButton}
-                        disabled={isSubmitting}
+                      <Link
+                        to={`/app/billing?platform=${selectedPlatform}`}
+                        style={styles.managePlanButton}
+                        className="su-plan-btn"
                       >
-                        {isSubmitting ? "Saving…" : "Save connections"}
-                      </button>
-                    </Form>
-                  )}
-                </section>
-              )}
+                        Manage billing
+                      </Link>
+                    </div>
+                  </section>
 
-              {/* SECTION 3.5 — CUSTOM FIELD / COLUMN / PROPERTY MAPPING */}
-              {connected && (
-                <section style={{ ...styles.card, marginTop: 16 }}>
-                  {(() => {
-                    const isTrial = subscription.planName === "trial";
-                    const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
-                    const isMappingUnlocked = isGrowthOrPro || isTrial;
-                    const platformName = selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion";
-                    const termFieldName = selectedPlatform === "clickup" ? "Custom Field" : selectedPlatform === "monday" ? "Column" : "Property";
-
-                    if (!isMappingUnlocked) {
-                      return (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                          <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                            {platformName} {termFieldName} Mapping
-                            <span style={{
-                              fontSize: 10,
-                              color: "#ff9900",
-                              background: "rgba(255,153,0,0.12)",
-                              border: "1px solid #ff990044",
-                              padding: "2px 8px",
-                              borderRadius: 12,
-                              fontWeight: 700,
-                              textTransform: "uppercase"
-                            }}>
-                              Locked
+                  {/* TWO-COLUMN GRID */}
+                  <div className="su-dashboard-grid">
+                    {/* LEFT COLUMN: Settings & Custom Field Mapping */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                      
+                      {/* Connection status card */}
+                      <section style={styles.card}>
+                        <div style={styles.cardHeaderRow}>
+                          <div style={styles.statusRow}>
+                            <span style={styles.statusDot} />
+                            <span style={styles.statusText}>
+                              {workspaceName
+                                ? `Connected to ${workspaceName}`
+                                : `${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} connected`}
                             </span>
-                          </h2>
-                          <p style={styles.cardText}>
-                            Map Shopify order attributes directly to your custom {termFieldName.toLowerCase()}s in {platformName}. This feature is available on the Growth & Pro plans.
-                          </p>
-                          <div style={{ marginTop: 8 }}>
-                            <Link
-                              to={`/app/billing?platform=${selectedPlatform}`}
-                              className="inline-flex items-center justify-center bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2.5 rounded-xl text-xs font-black tracking-wide shadow-lg shadow-emerald-500/10 transition-all duration-200"
-                              style={{ textDecoration: "none", color: "#03251c" }}
-                            >
-                              Upgrade to Unlock Custom Mapping
-                            </Link>
+                          </div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <Form method="post">
+                              <input type="hidden" name="intent" value="send_test_task" />
+                              <button
+                                type="submit"
+                                className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 cursor-pointer shadow shadow-emerald-500/10"
+                                disabled={isSubmitting}
+                                style={{ border: "none", color: "#03251c" }}
+                              >
+                                Send Test Task
+                              </button>
+                            </Form>
+
+                            <Form method="post" onSubmit={handleDisconnect}>
+                              <input type="hidden" name="intent" value="disconnect" />
+                              <button
+                                type="submit"
+                                style={styles.dangerButton}
+                                disabled={isSubmitting}
+                              >
+                                Disconnect
+                              </button>
+                            </Form>
                           </div>
                         </div>
-                      );
-                    }
+                      </section>
 
-                    // Mapping unlocked (Trial, Growth, or Pro)
-                    const hasSelectedList = listConnections && listConnections.length > 0;
-                    if (!hasSelectedList) {
-                      return (
-                        <div>
-                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>{platformName} {termFieldName} Mapping</h2>
+                      {/* Configure order list connections */}
+                      <section style={styles.card}>
+                        <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Configure order {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections</h2>
+                        <p style={styles.cardText}>
+                          Select where new orders should sync. Growth plan merchants can configure up to 5 {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} with keyword filters to route orders automatically.
+                        </p>
+
+                        {lists.length === 0 ? (
                           <p style={styles.cardText}>
-                            Please configure and save at least one connection above to begin mapping custom {termFieldName.toLowerCase()}s.
-                          </p>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
-                          <div style={{ flex: 1, minWidth: "250px" }}>
-                            <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                              {platformName} {termFieldName} Mapping
-                              <span style={{
-                                fontSize: 10,
-                                color: C.accent,
-                                background: "rgba(0,196,140,0.12)",
-                                border: `1px solid ${C.accent}44`,
-                                padding: "2px 8px",
-                                borderRadius: 12,
-                                fontWeight: 700,
-                                textTransform: "uppercase"
-                              }}>
-                                Active
-                              </span>
-                            </h2>
-                            <p style={styles.cardText}>
-                              Map Shopify order attributes directly to custom {termFieldName.toLowerCase()}s inside your primary connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}.
-                            </p>
-                          </div>
-                          
-                          <Form method="post">
-                            <input type="hidden" name="intent" value="save_field_mappings" />
-                            <input type="hidden" name="fieldMappingsJson" value={JSON.stringify(fieldMappingsList)} />
-                            <button
-                              type="submit"
-                              className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2 rounded-xl text-xs font-black tracking-wide transition-all duration-200 cursor-pointer shadow-lg shadow-emerald-500/10"
-                              disabled={isSubmitting}
-                              style={{ border: "none", color: "#03251c", outline: "none" }}
-                            >
-                              {isSubmitting ? "Saving..." : "Save mappings"}
-                            </button>
-                          </Form>
-                        </div>
-
-                        {actionData?.savedMappings && (
-                          <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-                            ✓ Mappings saved successfully.
-                          </div>
-                        )}
-
-                        {selectedPlatform === "clickup" && fieldMappingsList.length > 0 && (
-                          <div style={{ ...styles.warningBanner, marginBottom: 16, fontSize: "13px", lineHeight: "1.4" }}>
-                            <strong>⚠️ ClickUp Free Tier Notice:</strong> ClickUp Free Forever plans have a lifetime limit of 60 custom field uses. If your workspace is on the Free tier, updates to mapped fields will stop syncing once this limit is reached.
-                          </div>
-                        )}
-
-                        {clickupFields.length === 0 ? (
-                          <p style={styles.cardText}>
-                            No custom {termFieldName.toLowerCase()}s found in your connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}. Create some first, then reload this page.
+                            No {selectedPlatform === "clickup" ? "lists" : selectedPlatform === "monday" ? "boards" : "databases"} found in workspaces. Create one first then reload this page.
                           </p>
                         ) : (
-                          <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
-                            {/* Table Header */}
-                            <div className="grid grid-cols-12 bg-zinc-900/50 p-4 border-b border-zinc-800 font-semibold text-xs tracking-wider uppercase text-zinc-400">
-                              <div className="col-span-5">Shopify Source Field</div>
-                              <div className="col-span-2 text-center">Flow</div>
-                              <div className="col-span-5">Destination {termFieldName}</div>
-                            </div>
+                          <Form method="post" style={styles.form}>
+                            <input type="hidden" name="intent" value="save_connections" />
+                            <input type="hidden" name="listConnectionsJson" value={JSON.stringify(conns)} />
 
-                            {/* Mappings */}
-                            <div className="divide-y divide-zinc-900/50">
-                              {clickupFields.map((field) => {
-                                const currentMapping = fieldMappingsList.find((m) => m.clickupFieldId === field.id);
-                                return (
-                                  <div key={field.id} className="grid grid-cols-12 items-center p-4 hover:bg-zinc-900/10 transition-colors">
-                                    {/* Shopify field selector */}
-                                    <div className="col-span-5">
-                                      <select
-                                        value={currentMapping?.shopifySourceField || ""}
-                                        onChange={(e) => {
-                                          const val = e.currentTarget.value;
-                                          // Update state
-                                          setFieldMappingsList((prev) => {
-                                            const filtered = prev.filter((m) => m.clickupFieldId !== field.id);
-                                            if (!val) return filtered;
-                                            return [
-                                              ...filtered,
-                                              {
-                                                shopifySourceField: val,
-                                                clickupFieldId: field.id,
-                                                clickupFieldName: field.name,
-                                                clickupFieldType: field.type,
-                                              },
-                                            ];
-                                          });
-                                        }}
-                                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                                      >
-                                        <option value="">-- Leave Unmapped --</option>
-                                        {SHOPIFY_SOURCE_FIELDS.map((src) => (
-                                          <option key={src.id} value={src.id}>
-                                            {src.label} ({src.type.toUpperCase()})
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-
-                                    {/* Arrow icon */}
-                                    <div className="col-span-2 flex justify-center text-emerald-400">
-                                      <span style={{ fontSize: "14px", fontWeight: "bold" }}>&rarr;</span>
-                                    </div>
-
-                                    {/* ClickUp Custom Field read-only info */}
-                                    <div className="col-span-5 flex justify-between items-center pl-2">
-                                      <div>
-                                        <span className="font-semibold text-xs text-white">{field.name}</span>
-                                        <div className="flex gap-1.5 mt-1">
-                                          <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-zinc-900 text-zinc-400 border border-zinc-800">
-                                            {field.type}
-                                          </span>
-                                        </div>
-                                      </div>
-                                      <div className="text-zinc-500 font-mono text-[10px] hidden sm:block">
-                                        {field.id.slice(0, 8)}...
-                                      </div>
-                                    </div>
+                            <div style={styles.connectionsContainer}>
+                              {conns.map((conn, index) => (
+                                <div key={index} style={styles.connectionRow}>
+                                  <div style={{ flex: 2, minWidth: "150px" }}>
+                                    <label style={styles.formLabel} htmlFor={`list_${index}`}>
+                                      {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}
+                                    </label>
+                                    <select
+                                      id={`list_${index}`}
+                                      value={conn.id}
+                                      onChange={(e) => {
+                                        const selectedId = e.currentTarget.value;
+                                        const match = lists.find((l) => l.id === selectedId);
+                                        const updated = [...conns];
+                                        updated[index] = {
+                                          ...conn,
+                                          id: selectedId,
+                                          name: match ? match.name : "",
+                                        };
+                                        setConns(updated);
+                                      }}
+                                      style={styles.select}
+                                    >
+                                      <option value="">Select...</option>
+                                      {lists.map((list) => (
+                                        <option key={list.id} value={list.id}>
+                                          {list.name}
+                                        </option>
+                                      ))}
+                                    </select>
                                   </div>
-                                );
-                              })}
+
+                                  {listLimit > 1 && (
+                                    <div style={{ flex: 1, minWidth: "120px" }}>
+                                      <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword / Tag</label>
+                                      <input
+                                        id={`kw_${index}`}
+                                        type="text"
+                                        placeholder="e.g. Shoes or Vendor"
+                                        value={conn.keyword || ""}
+                                        onChange={(e) => {
+                                          const updated = [...conns];
+                                          updated[index] = { ...conn, keyword: e.currentTarget.value };
+                                          setConns(updated);
+                                        }}
+                                        style={styles.input}
+                                        className="border border-zinc-800"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {listLimit > 1 && conns.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConns(conns.filter((_, i) => i !== index))}
+                                      style={styles.removeConnButton}
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
                             </div>
-                          </div>
+
+                            {conns.length < listLimit && (
+                              <button
+                                type="button"
+                                onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "" }])}
+                                style={styles.addConnButton}
+                              >
+                                + Add connection
+                              </button>
+                            )}
+
+                            <button
+                              type="submit"
+                              style={styles.primaryButton}
+                              disabled={isSubmitting}
+                            >
+                              {isSubmitting ? "Saving…" : "Save connections"}
+                            </button>
+                          </Form>
                         )}
-                      </div>
-                    );
-                  })()}
-                </section>
-              )}
+                      </section>
 
-              {/* SECTION 4 — SYNC ANALYTICS (locked for Standard, active for Growth/Pro, active during trial) */}
-              {(() => {
-                const isTrial = subscription.planName === "trial";
-                const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
-                const isAnalyticsUnlocked = isGrowthOrPro || isTrial;
+                      {/* Custom Field Mapping */}
+                      <section style={styles.card}>
+                        {(() => {
+                          const isTrial = subscription.planName === "trial";
+                          const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+                          const isMappingUnlocked = isGrowthOrPro || isTrial;
+                          const platformName = selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion";
+                          const termFieldName = selectedPlatform === "clickup" ? "Custom Field" : selectedPlatform === "monday" ? "Column" : "Property";
 
-                return (
-                  <section style={{ ...styles.card, marginTop: 16, position: "relative", overflow: "hidden" }}>
-                    <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      Sync Analytics
-                      {isTrial && (
-                        <span style={{
-                          fontSize: 11,
-                          color: C.accent,
-                          background: "rgba(0,196,140,0.12)",
-                          border: `1px solid ${C.accent}44`,
-                          padding: "2px 8px",
-                          borderRadius: 12,
-                          fontWeight: 600,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.05em"
-                        }}>
-                          Growth Plan Feature (Free during trial)
-                        </span>
-                      )}
-                    </h2>
-
-                    <div style={isAnalyticsUnlocked ? {} : { filter: "blur(4px)", pointerEvents: "none", opacity: 0.6 }}>
-                      <div style={styles.analyticsGrid}>
-                        <div style={styles.analyticsStatCard}>
-                          <div style={styles.analyticsStatLabel}>Synced this month</div>
-                          <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
-                        </div>
-                        <div style={styles.analyticsStatCard}>
-                          <div style={styles.analyticsStatLabel}>Synced all time</div>
-                          <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
-                        </div>
-                        <div style={styles.analyticsStatCard}>
-                          <div style={styles.analyticsStatLabel}>Success Rate</div>
-                          <div style={styles.analyticsStatValue}>{analytics.successRate}%</div>
-                        </div>
-                      </div>
-
-                      <h3 style={styles.sectionSubheading}>Recent Sync Events</h3>
-                      {analytics.recentTasks.length === 0 ? (
-                        <p style={styles.cardText}>No sync events recorded yet.</p>
-                      ) : (
-                        <table style={styles.table}>
-                          <thead>
-                            <tr>
-                              <th style={styles.th}>Time</th>
-                              <th style={styles.th}>Order</th>
-                              <th style={styles.th}>Event</th>
-                              <th style={styles.th}>Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {analytics.recentTasks.map((t) => (
-                              <tr key={t.id} style={styles.tr}>
-                                <td style={styles.td}>{timeAgo(t.createdAt)}</td>
-                                <td style={styles.td}>{t.orderNumber}</td>
-                                <td style={styles.td}>
-                                  {t.status === "fulfilled"
-                                    ? "Fulfillment Synced"
-                                    : t.status === "failed"
-                                    ? "Sync Failed"
-                                    : t.status === "retrying"
-                                    ? "Sync Retried (Queued)"
-                                    : "Order Synced"}
-                                </td>
-                                <td style={styles.td}>
-                                  <span
+                          if (!isMappingUnlocked) {
+                            return (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                                <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                                  {platformName} {termFieldName} Mapping
+                                  <span style={{
+                                    fontSize: 10,
+                                    color: "#ff9900",
+                                    background: "rgba(255,153,0,0.12)",
+                                    border: "1px solid #ff990044",
+                                    padding: "2px 8px",
+                                    borderRadius: 12,
+                                    fontWeight: 700,
+                                    textTransform: "uppercase"
+                                  }}>
+                                    Locked
+                                  </span>
+                                </h2>
+                                <p style={styles.cardText}>
+                                  Map Shopify order attributes directly to your custom {termFieldName.toLowerCase()}s in {platformName}. This feature is available on the Growth & Pro plans.
+                                </p>
+                                <div style={{ alignSelf: "flex-start", marginTop: 8 }}>
+                                  <Link
+                                    to={`/app/billing?platform=${selectedPlatform}`}
                                     style={{
-                                      ...styles.statusBadgeInline,
-                                      color: t.status === "failed" ? "#ff4444" : t.status === "retrying" ? "#ff9900" : "#00c48c",
-                                      background: t.status === "failed" ? "rgba(255,68,68,0.12)" : t.status === "retrying" ? "rgba(255,153,0,0.12)" : "rgba(0,196,140,0.12)",
+                                      ...styles.primaryButton,
+                                      display: "inline-block",
+                                      textDecoration: "none",
+                                      textAlign: "center",
                                     }}
                                   >
-                                    {t.status}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
+                                    Upgrade to Unlock Custom Mapping
+                                  </Link>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          const hasSelectedList = listConnections && listConnections.length > 0;
+                          if (!hasSelectedList) {
+                            return (
+                              <div>
+                                <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>{platformName} {termFieldName} Mapping</h2>
+                                <p style={styles.cardText}>
+                                  Please configure and save at least one connection above to begin mapping custom {termFieldName.toLowerCase()}s.
+                                </p>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+                                <div style={{ flex: 1, minWidth: "250px" }}>
+                                  <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                                    {platformName} {termFieldName} Mapping
+                                    <span style={{
+                                      fontSize: 10,
+                                      color: C.accent,
+                                      background: "rgba(0,196,140,0.12)",
+                                      border: `1px solid ${C.accent}44`,
+                                      padding: "2px 8px",
+                                      borderRadius: 12,
+                                      fontWeight: 700,
+                                      textTransform: "uppercase"
+                                    }}>
+                                      Active
+                                    </span>
+                                  </h2>
+                                  <p style={styles.cardText}>
+                                    Map Shopify order attributes directly to custom {termFieldName.toLowerCase()}s inside your primary connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}.
+                                  </p>
+                                </div>
+                                
+                                <Form method="post">
+                                  <input type="hidden" name="intent" value="save_field_mappings" />
+                                  <input type="hidden" name="fieldMappingsJson" value={JSON.stringify(fieldMappingsList)} />
+                                  <button
+                                    type="submit"
+                                    className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 px-4 py-2 rounded-xl text-xs font-black tracking-wide transition-all duration-200 cursor-pointer shadow-lg shadow-emerald-500/10"
+                                    disabled={isSubmitting}
+                                    style={{ border: "none", color: "#03251c", outline: "none" }}
+                                  >
+                                    {isSubmitting ? "Saving..." : "Save mappings"}
+                                  </button>
+                                </Form>
+                              </div>
+
+                              {actionData?.savedMappings && (
+                                <div style={{ ...styles.successBanner, marginBottom: 16 }}>
+                                  ✓ Mappings saved successfully.
+                                </div>
+                              )}
+
+                              {/* TEMPLATE PRESETS BAR */}
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>Start from a preset:</span>
+                                {["basic", "customer", "financial"].map((preset) => (
+                                  <button
+                                    key={preset}
+                                    type="button"
+                                    onClick={() => applyPreset(preset)}
+                                    style={{
+                                      background: "rgba(255,255,255,0.05)",
+                                      border: `1px solid ${C.border}`,
+                                      color: C.text,
+                                      padding: "4px 10px",
+                                      borderRadius: 8,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      transition: "all 0.2s"
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.borderColor = C.accent}
+                                    onMouseLeave={(e) => e.currentTarget.style.borderColor = C.border}
+                                  >
+                                    {preset === "basic" ? "📦 Basic" : preset === "customer" ? "📋 Full Customer" : "💰 Financial"}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {selectedPlatform === "clickup" && fieldMappingsList.length > 0 && (
+                                <div style={{ ...styles.warningBanner, marginBottom: 16, fontSize: "13px", lineHeight: "1.4" }}>
+                                  <strong>⚠️ ClickUp Free Tier Notice:</strong> ClickUp Free Forever plans have a lifetime limit of 60 custom field uses. If your workspace is on the Free tier, updates to mapped fields will stop syncing once this limit is reached.
+                                </div>
+                              )}
+
+                              {clickupFields.length === 0 ? (
+                                <p style={styles.cardText}>
+                                  No custom {termFieldName.toLowerCase()}s found in your connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}. Create some first, then reload this page.
+                                </p>
+                              ) : (
+                                <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
+                                  {/* Table Header */}
+                                  <div className="grid grid-cols-12 bg-zinc-900/50 p-4 border-b border-zinc-800 font-semibold text-xs tracking-wider uppercase text-zinc-400">
+                                    <div className="col-span-5">Shopify Source Field</div>
+                                    <div className="col-span-2 text-center">Flow</div>
+                                    <div className="col-span-5">Destination {termFieldName}</div>
+                                  </div>
+
+                                  {/* Mappings */}
+                                  <div className="divide-y divide-zinc-900/50">
+                                    {clickupFields.map((field) => {
+                                      const currentMapping = fieldMappingsList.find((m) => m.clickupFieldId === field.id);
+                                      return (
+                                        <div key={field.id} className="grid grid-cols-12 items-center p-4 hover:bg-zinc-900/10 transition-colors">
+                                          {/* Shopify field selector */}
+                                          <div className="col-span-5">
+                                            <select
+                                              value={currentMapping?.shopifySourceField || ""}
+                                              onChange={(e) => {
+                                                const val = e.currentTarget.value;
+                                                setFieldMappingsList((prev) => {
+                                                  const filtered = prev.filter((m) => m.clickupFieldId !== field.id);
+                                                  if (!val) return filtered;
+                                                  return [
+                                                    ...filtered,
+                                                    {
+                                                      shopifySourceField: val,
+                                                      clickupFieldId: field.id,
+                                                      clickupFieldName: field.name,
+                                                      clickupFieldType: field.type,
+                                                    },
+                                                  ];
+                                                });
+                                              }}
+                                              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                                            >
+                                              <option value="">-- Leave Unmapped --</option>
+                                              {SHOPIFY_SOURCE_FIELDS.map((src) => (
+                                                <option key={src.id} value={src.id}>
+                                                  {src.label} ({src.type.toUpperCase()})
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </div>
+
+                                          {/* Arrow icon */}
+                                          <div className="col-span-2 flex justify-center text-emerald-400">
+                                            <span style={{ fontSize: "14px", fontWeight: "bold" }}>&rarr;</span>
+                                          </div>
+
+                                          {/* ClickUp Custom Field read-only info */}
+                                          <div className="col-span-5 flex justify-between items-center pl-2">
+                                            <div>
+                                              <span className="font-semibold text-xs text-white">{field.name}</span>
+                                              <div className="flex gap-1.5 mt-1">
+                                                <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-zinc-900 text-zinc-400 border border-zinc-800">
+                                                  {field.type}
+                                                </span>
+                                              </div>
+                                            </div>
+                                            <div className="text-zinc-500 font-mono text-[10px] hidden sm:block">
+                                              {field.id.slice(0, 8)}...
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </section>
+
+                      {/* Sync Settings */}
+                      <section style={styles.card}>
+                        <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Sync Settings</h2>
+                        <p style={styles.cardText}>
+                          Configure how and when orders are synced to your connected workspace tool.
+                        </p>
+
+                        <Form method="post" style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 24 }}>
+                          <input type="hidden" name="intent" value="save_settings" />
+
+                          {/* Task Name Template */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="taskNameTemplate">
+                              Task Name Template
+                            </label>
+                            <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
+                              Customise the task title using tokens. Leave blank to use the default.
+                            </p>
+                            <input
+                              id="taskNameTemplate"
+                              name="taskNameTemplate"
+                              type="text"
+                              value={localTaskTemplate}
+                              onChange={(e) => setLocalTaskTemplate(e.currentTarget.value)}
+                              placeholder="Order {order_number} — {customer_name}"
+                              style={styles.input}
+                            />
+                            {/* Token chips */}
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                              {[
+                                "{order_number}",
+                                "{customer_name}",
+                                "{order_total}",
+                                "{shipping_method}",
+                                "{item_count}",
+                                "{payment_status}",
+                              ].map((token) => (
+                                <button
+                                  key={token}
+                                  type="button"
+                                  onClick={() => setLocalTaskTemplate((prev) => (prev ? `${prev} ${token}` : token))}
+                                  style={{
+                                    fontSize: 11,
+                                    background: "rgba(0,196,140,0.08)",
+                                    border: "1px solid rgba(0,196,140,0.2)",
+                                    color: C.accent,
+                                    padding: "3px 8px",
+                                    borderRadius: 6,
+                                    cursor: "pointer",
+                                    fontWeight: 500,
+                                    outline: "none",
+                                  }}
+                                >
+                                  {token}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Sync Trigger Selector */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <label style={{ ...styles.formLabel, marginBottom: 0 }}>
+                              Sync Trigger
+                            </label>
+                            <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
+                              Choose when a task is created for new orders.
+                            </p>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+                              {[
+                                { id: "payment_confirmed", title: "Payment confirmed (Recommended)", desc: "Creates task only when payment is captured/paid (default)." },
+                                { id: "on_create", title: "Order placed", desc: "Creates task immediately for any order, including unpaid draft orders." },
+                                { id: "on_fulfillment_start", title: "Fulfillment begins", desc: "Creates task only when order fulfillment starts (partial or full)." }
+                              ].map(({ id, title, desc }) => (
+                                <label key={id} style={{ display: "flex", gap: 12, alignItems: "flex-start", cursor: "pointer" }}>
+                                  <input
+                                    type="radio"
+                                    name="syncTrigger"
+                                    value={id}
+                                    checked={localSyncTrigger === id}
+                                    onChange={() => setLocalSyncTrigger(id)}
+                                    style={{ marginTop: 4, accentColor: C.accent }}
+                                  />
+                                  <div>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                                      {title}
+                                    </div>
+                                    <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>{desc}</div>
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Subtasks Toggle */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
+                                Create one subtask per line item
+                                {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
+                                  <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
+                                Each line item in the Shopify order becomes a subtask. Lets packing teams check off individual items.
+                              </div>
+                            </div>
+                            <input type="hidden" name="subtasksEnabled" value={String(localSubtasks)} />
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={localSubtasks}
+                              disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                              onClick={() => setLocalSubtasks((v) => !v)}
+                              style={{
+                                width: 44,
+                                height: 24,
+                                borderRadius: 12,
+                                background: localSubtasks ? "#00c48c" : "#2a2a2a",
+                                border: "none",
+                                cursor: "pointer",
+                                position: "relative",
+                                flexShrink: 0,
+                                transition: "background 0.2s ease",
+                                outline: "none",
+                              }}
+                            >
+                              <span style={{
+                                position: "absolute",
+                                top: 2,
+                                left: localSubtasks ? 22 : 2,
+                                width: 20,
+                                height: 20,
+                                borderRadius: "50%",
+                                background: "#ffffff",
+                                transition: "left 0.2s ease",
+                                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                              }} />
+                            </button>
+                          </div>
+
+                          <button
+                            type="submit"
+                            style={{ ...styles.primaryButton, alignSelf: "flex-start" }}
+                            disabled={isSubmitting}
+                          >
+                            {isSubmitting ? "Saving…" : "Save settings"}
+                          </button>
+                        </Form>
+                      </section>
+
                     </div>
 
-                    {!isAnalyticsUnlocked && (
-                      <div style={styles.analyticsLockOverlay}>
-                        <div style={styles.lockIcon}>🔒</div>
-                        <div style={styles.lockTitle}>Growth Plan Feature</div>
-                        <div style={styles.lockText}>
-                          Upgrade to the Growth plan to unlock sync analytics, up to 5 {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections, priority support, and automatic webhook retries.
-                        </div>
-                        <Link to={`/app/billing?platform=${selectedPlatform}`} style={styles.upgradeInlineButton}>
-                          Upgrade to Growth
-                        </Link>
-                      </div>
-                    )}
-                  </section>
-                );
-              })()}
+                    {/* RIGHT COLUMN: Health, Stats & Live Event feed */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                      
+                      {/* Webhook Health Badge Card */}
+                      <section style={styles.card}>
+                        <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          Connection Health
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              textTransform: "uppercase",
+                              padding: "2px 8px",
+                              borderRadius: 12,
+                              letterSpacing: "0.05em",
+                              color: healthStatus === "healthy" ? C.accent : "#ff4444",
+                              background: healthStatus === "healthy" ? "rgba(0, 196, 140, 0.12)" : "rgba(255, 68, 68, 0.12)",
+                              border: `1px solid ${healthStatus === "healthy" ? C.accent : "#ff4444"}44`,
+                            }}
+                          >
+                            {healthStatus === "healthy" ? "Live" : "Error"}
+                          </span>
+                        </h2>
+                        <p style={{ ...styles.cardText, margin: 0 }}>
+                          {healthStatus === "healthy"
+                            ? `✓ Your integration with ${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} is functioning normally.`
+                            : `⚠️ Integration token is inactive or rate-limited. Try disconnecting and reconnecting.`}
+                        </p>
+                      </section>
 
-              {/* Recent Activity Log */}
-              {recentActivity.length > 0 && (
-                <section style={{ ...styles.card, marginTop: 16 }}>
-                  <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>
-                    Recent log
-                  </h2>
-                  <ul style={styles.activityList}>
-                    {recentActivity.map((event) => (
-                      <li key={event.id} style={styles.activityItem}>
-                        <span
-                          style={{
-                            ...styles.activityIcon,
-                            color: EVENT_COLORS[event.eventType] || C.muted,
-                          }}
-                        >
-                          {EVENT_ICONS[event.eventType] || "·"}
-                        </span>
-                        <span style={styles.activityDescription}>
-                          {event.description}
-                        </span>
-                        <span style={styles.activityTime}>
-                          {timeAgo(event.createdAt)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-            </>
+                      {/* Sync Analytics Card */}
+                      {(() => {
+                        const isTrial = subscription.planName === "trial";
+                        const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+                        const isAnalyticsUnlocked = isGrowthOrPro || isTrial;
+
+                        return (
+                          <section style={{ ...styles.card, position: "relative", overflow: "hidden" }}>
+                            <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              Sync Analytics
+                              {isTrial && (
+                                <span style={{
+                                  fontSize: 10,
+                                  color: C.accent,
+                                  background: "rgba(0,196,140,0.12)",
+                                  border: `1px solid ${C.accent}44`,
+                                  padding: "2px 8px",
+                                  borderRadius: 12,
+                                  fontWeight: 600,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em"
+                                }}>
+                                  Trial mode
+                                </span>
+                              )}
+                            </h2>
+
+                            <div style={isAnalyticsUnlocked ? {} : { filter: "blur(4px)", pointerEvents: "none", opacity: 0.6 }}>
+                              <div style={styles.analyticsGrid}>
+                                <div style={styles.analyticsStatCard}>
+                                  <div style={styles.analyticsStatLabel}>Synced this month</div>
+                                  <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
+                                </div>
+                                <div style={styles.analyticsStatCard}>
+                                  <div style={styles.analyticsStatLabel}>Synced all time</div>
+                                  <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
+                                </div>
+                                <div style={styles.analyticsStatCard}>
+                                  <div style={styles.analyticsStatLabel}>Success Rate</div>
+                                  <div style={styles.analyticsStatValue}>{analytics.successRate}%</div>
+                                </div>
+                              </div>
+
+                              <h3 style={styles.sectionSubheading}>Recent Sync Events</h3>
+                              {analytics.recentTasks.length === 0 ? (
+                                <p style={styles.cardText}>No sync events recorded yet.</p>
+                              ) : (
+                                <table style={styles.table}>
+                                  <thead>
+                                    <tr>
+                                      <th style={styles.th}>Time</th>
+                                      <th style={styles.th}>Order</th>
+                                      <th style={styles.th}>Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {analytics.recentTasks.map((t) => (
+                                      <tr key={t.id} style={styles.tr}>
+                                        <td style={styles.td}>{timeAgo(t.createdAt)}</td>
+                                        <td style={styles.td}>{t.orderNumber}</td>
+                                        <td style={styles.td}>
+                                          <span
+                                            style={{
+                                              ...styles.statusBadgeInline,
+                                              color: t.status === "failed" ? "#ff4444" : t.status === "retrying" ? "#ff9900" : "#00c48c",
+                                              background: t.status === "failed" ? "rgba(255,68,68,0.12)" : t.status === "retrying" ? "rgba(255,153,0,0.12)" : "rgba(0,196,140,0.12)",
+                                            }}
+                                          >
+                                            {t.status}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+
+                            {!isAnalyticsUnlocked && (
+                              <div style={styles.analyticsLockOverlay}>
+                                <div style={styles.lockIcon}>🔒</div>
+                                <div style={styles.lockTitle}>Growth Plan Feature</div>
+                                <div style={styles.lockText}>
+                                  Upgrade to the Growth plan to unlock sync analytics, up to 5 connection routes, and automatic fulfillment updates.
+                                </div>
+                                <Link to={`/app/billing?platform=${selectedPlatform}`} style={styles.upgradeInlineButton}>
+                                  Upgrade to Growth
+                                </Link>
+                              </div>
+                            )}
+                          </section>
+                        );
+                      })()}
+
+                      {/* Recent Activity Log */}
+                      {recentActivity.length > 0 && (
+                        <section style={styles.card}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                            <h2 style={{ ...styles.cardTitle, marginTop: 0, marginBottom: 0 }}>
+                              Recent log
+                            </h2>
+                            <Link
+                              to="/app/history"
+                              style={{ fontSize: 12, color: "#00c48c", textDecoration: "none", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}
+                            >
+                              View full history →
+                            </Link>
+                          </div>
+                          <ul style={styles.activityList}>
+                            {recentActivity.map((event) => (
+                              <li key={event.id} style={styles.activityItem}>
+                                <span
+                                  style={{
+                                    ...styles.activityIcon,
+                                    color: EVENT_COLORS[event.eventType] || C.muted,
+                                  }}
+                                >
+                                  {EVENT_ICONS[event.eventType] || "·"}
+                                </span>
+                                <span style={styles.activityDescription}>
+                                  {event.description}
+                                </span>
+                                <span style={styles.activityTime}>
+                                  {timeAgo(event.createdAt)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+
+                    </div>
+                  </div>
+                </div>
+              )}</>
           )}
 
           <footer style={styles.footer}>

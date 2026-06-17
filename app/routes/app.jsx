@@ -19,6 +19,7 @@ export default function App() {
       <SessionTokenCheckIn />
       <s-app-nav>
         <s-link href="/app">Home</s-link>
+        <s-link href="/app/history">Sync History</s-link>
         <s-link href="/app/additional">Additional page</s-link>
       </s-app-nav>
       <Outlet />

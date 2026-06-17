@@ -1,0 +1,229 @@
+import { useState } from "react";
+import { Form, useLoaderData, useNavigation, Link } from "react-router";
+import { authenticate } from "../shopify.server";
+import prisma from "../db.server";
+
+export const loader = async ({ request }) => {
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+  const url = new URL(request.url);
+  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const statusFilter = url.searchParams.get("status") || "all";
+  const orderSearch = url.searchParams.get("order") || "";
+  const PAGE_SIZE = 50;
+  const where = {
+    shopDomain: shop,
+    ...(statusFilter !== "all" ? { syncStatus: statusFilter } : {}),
+    ...(orderSearch ? { orderNumber: { contains: orderSearch } } : {}),
+  };
+  const [total, records] = await Promise.all([
+    prisma.orderSyncRecord.count({ where }),
+    prisma.orderSyncRecord.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: PAGE_SIZE,
+      skip: (page - 1) * PAGE_SIZE,
+      include: { syncTarget: { select: { targetResourceName: true, connection: { select: { provider: true } } } } },
+    }),
+  ]);
+  return {
+    shop,
+    records: records.map((r) => ({
+      id: r.id,
+      shopifyOrderId: r.shopifyOrderId,
+      orderNumber: r.orderNumber || "#" + r.shopifyOrderId,
+      syncStatus: r.syncStatus,
+      targetName: r.syncTarget?.targetResourceName || "\u2014",
+      provider: (r.syncTarget?.connection?.provider || "CLICKUP").toLowerCase(),
+      createdAt: r.createdAt.toISOString(),
+    })),
+    page,
+    totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
+    total,
+    statusFilter,
+    orderSearch,
+  };
+};
+
+export const action = async ({ request }) => {
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "retry_sync") {
+    const recordId = formData.get("recordId");
+    try {
+      const record = await prisma.orderSyncRecord.findFirst({ where: { id: recordId, shopDomain: shop } });
+      if (!record) return { ok: false, error: "Record not found." };
+      const existingJob = await prisma.syncJob.findFirst({
+        where: { shopDomain: shop, shopifyOrderId: record.shopifyOrderId },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existingJob?.payload) {
+        await prisma.syncJob.create({
+          data: { shopDomain: shop, shopifyOrderId: record.shopifyOrderId, payload: existingJob.payload, status: "pending", attempts: 0 },
+        });
+        await prisma.orderSyncRecord.update({ where: { id: recordId }, data: { syncStatus: "retrying" } });
+        return { ok: true, retried: true };
+      }
+      return { ok: false, error: "Original order payload not found." };
+    } catch (err) {
+      return { ok: false, error: "Retry failed: " + err.message };
+    }
+  }
+
+  if (intent === "export_csv") {
+    const sf = formData.get("statusFilter") || "all";
+    const where = { shopDomain: shop, ...(sf !== "all" ? { syncStatus: sf } : {}) };
+    const all = await prisma.orderSyncRecord.findMany({
+      where, orderBy: { createdAt: "desc" }, take: 5000,
+      include: { syncTarget: { select: { targetResourceName: true, connection: { select: { provider: true } } } } },
+    });
+    const header = "Order Number,Shopify Order ID,Platform,Destination,Status,Created At\n";
+    const rows = all.map((r) =>
+      [r.orderNumber || ("#" + r.shopifyOrderId), r.shopifyOrderId,
+       r.syncTarget?.connection?.provider || "CLICKUP", r.syncTarget?.targetResourceName || "",
+       r.syncStatus, new Date(r.createdAt).toISOString()]
+        .map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(",")
+    );
+    return new Response(header + rows.join("\n"), {
+      headers: { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="syncup-history.csv"' },
+    });
+  }
+
+  return { ok: false, error: "Unknown action." };
+};
+
+const C = { bg: "#0f0f0f", surface: "#1a1a1a", border: "#2a2a2a", text: "#ffffff", muted: "#9a9a9a", accent: "#00c48c" };
+
+function timeAgo(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+
+const SC = {
+  synced:    { color: "#00c48c", bg: "rgba(0,196,140,0.12)", label: "Synced" },
+  fulfilled: { color: "#00c48c", bg: "rgba(0,196,140,0.12)", label: "Fulfilled" },
+  retrying:  { color: "#ff9900", bg: "rgba(255,153,0,0.12)", label: "Retrying" },
+  failed:    { color: "#ff4444", bg: "rgba(255,68,68,0.12)", label: "Failed" },
+};
+
+const PL = { clickup: "ClickUp", monday: "Monday.com", notion: "Notion" };
+
+export default function HistoryPage() {
+  const { records, page, totalPages, total, statusFilter, orderSearch } = useLoaderData();
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state === "submitting";
+  const [searchVal, setSearchVal] = useState(orderSearch || "");
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "system-ui,-apple-system,sans-serif" }}>
+      <style>{".sh-row:hover{background:rgba(255,255,255,0.025)!important}@media(max-width:640px){.sh-hide{display:none!important}}"}</style>
+      <div style={{ maxWidth: 920, margin: "0 auto", padding: "28px 20px" }}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <Link to="/app" style={{ color: C.accent, textDecoration: "none", fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4, marginBottom: 10 }}>
+              {"<"} Back to dashboard
+            </Link>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>Sync History</h1>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: C.muted }}>{total.toLocaleString()} total records</p>
+          </div>
+          <Form method="post">
+            <input type="hidden" name="intent" value="export_csv" />
+            <input type="hidden" name="statusFilter" value={statusFilter} />
+            <button type="submit" disabled={isSubmitting} style={{ background: C.surface, border: "1px solid " + C.border, color: C.muted, padding: "8px 16px", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", outline: "none" }}>
+              Export CSV
+            </button>
+          </Form>
+        </div>
+
+        {/* Filters */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          {["all", "synced", "fulfilled", "failed", "retrying"].map((s) => (
+            <a key={s} href={"/app/history?status=" + s + "&order=" + searchVal + "&page=1"} style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, textDecoration: "none", border: statusFilter === s ? "1px solid " + C.accent : "1px solid " + C.border, color: statusFilter === s ? C.accent : C.muted, background: statusFilter === s ? "rgba(0,196,140,0.08)" : "transparent" }}>
+              {s.charAt(0).toUpperCase() + s.slice(1)}
+            </a>
+          ))}
+          <form method="get" action="/app/history" style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            <input type="hidden" name="status" value={statusFilter} />
+            <input name="order" type="text" placeholder="Search order #..." value={searchVal} onChange={(e) => setSearchVal(e.currentTarget.value)} style={{ background: C.surface, border: "1px solid " + C.border, color: C.text, padding: "7px 12px", borderRadius: 8, fontSize: 12, outline: "none", width: 150 }} />
+            <button type="submit" style={{ background: C.accent, border: "none", color: "#03251c", padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Search</button>
+          </form>
+        </div>
+
+        {/* Table */}
+        <div style={{ border: "1px solid " + C.border, borderRadius: 14, overflow: "hidden", background: "#111" }}>
+          {/* Header row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 90px 100px 80px 70px", padding: "12px 16px", background: "#161616", borderBottom: "1px solid " + C.border, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.muted }}>
+            <div>Order</div>
+            <div className="sh-hide">Destination</div>
+            <div className="sh-hide">Platform</div>
+            <div>Time</div>
+            <div>Status</div>
+            <div>Action</div>
+          </div>
+
+          {records.length === 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: C.muted, fontSize: 13 }}>No sync records found.</div>
+          ) : (
+            records.map((r) => {
+              const sc = SC[r.syncStatus] || SC.synced;
+              return (
+                <div key={r.id} className="sh-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 90px 100px 80px 70px", padding: "12px 16px", borderBottom: "1px solid " + C.border, alignItems: "center", transition: "background 0.1s" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{r.orderNumber}</div>
+                  <div className="sh-hide" style={{ fontSize: 12, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.targetName}</div>
+                  <div className="sh-hide" style={{ fontSize: 11, color: C.muted }}>{PL[r.provider] || r.provider}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{timeAgo(r.createdAt)}</div>
+                  <div>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: sc.color, background: sc.bg, border: "1px solid " + sc.color + "44", padding: "2px 8px", borderRadius: 8, textTransform: "uppercase", whiteSpace: "nowrap" }}>
+                      {sc.label}
+                    </span>
+                  </div>
+                  <div>
+                    {r.syncStatus === "failed" && (
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="retry_sync" />
+                        <input type="hidden" name="recordId" value={r.id} />
+                        <button type="submit" disabled={isSubmitting} style={{ background: "rgba(255,153,0,0.12)", border: "1px solid rgba(255,153,0,0.3)", color: "#ff9900", padding: "3px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none" }}>
+                          Retry
+                        </button>
+                      </Form>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 20 }}>
+            {page > 1 && (
+              <a href={"/app/history?status=" + statusFilter + "&order=" + orderSearch + "&page=" + (page - 1)} style={{ padding: "6px 14px", borderRadius: 8, background: C.surface, border: "1px solid " + C.border, color: C.muted, fontSize: 13, textDecoration: "none", fontWeight: 600 }}>Prev</a>
+            )}
+            <span style={{ padding: "6px 14px", fontSize: 13, color: C.muted }}>Page {page} of {totalPages}</span>
+            {page < totalPages && (
+              <a href={"/app/history?status=" + statusFilter + "&order=" + orderSearch + "&page=" + (page + 1)} style={{ padding: "6px 14px", borderRadius: 8, background: C.surface, border: "1px solid " + C.border, color: C.muted, fontSize: 13, textDecoration: "none", fontWeight: 600 }}>Next</a>
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+export function ErrorBoundary() {
+  return (
+    <div style={{ padding: 32, color: "#ff4444", fontFamily: "system-ui" }}>
+      Something went wrong loading sync history.
+    </div>
+  );
+}

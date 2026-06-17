@@ -82,6 +82,26 @@ async function handleJobProcess(request) {
       const order = payload;
       const orderNumber = String(order.order_number ?? order.number ?? order.id);
 
+      // Check sync trigger setting
+      const syncTrigger = subscription.syncTrigger || "payment_confirmed";
+      if (syncTrigger === "payment_confirmed" && order.financial_status !== "paid") {
+        // Skip unpaid orders for this trigger
+        await prisma.syncJob.update({
+          where: { id: job.id },
+          data: { status: "completed" }
+        });
+        results.push({ jobId: job.id, success: true, skipped: true, reason: "trigger:not_paid" });
+        continue;
+      }
+      if (syncTrigger === "on_fulfillment_start" && !order.fulfillment_status) {
+        await prisma.syncJob.update({
+          where: { id: job.id },
+          data: { status: "completed" }
+        });
+        results.push({ jobId: job.id, success: true, skipped: true, reason: "trigger:not_fulfilling" });
+        continue;
+      }
+
       // Determine target list ID using multi-list connection routing
       let targetListId = connection.listId;
       let targetListName = connection.listName;
@@ -149,7 +169,32 @@ async function handleJobProcess(request) {
 
       const storeHandle = shopDomain.replace(/\.myshopify\.com$/, "");
       const adminOrderUrl = `https://admin.shopify.com/store/${storeHandle}/orders/${order.id}`;
-      const taskName = `Order #${orderNumber} — ${customerName}`;
+
+      // Resolve task name from merchant template or fall back to default
+      const resolveTemplate = (template, vals) =>
+        template
+          .replace(/{order_number}/g, vals.orderNumber)
+          .replace(/{customer_name}/g, vals.customerName)
+          .replace(/{order_total}/g, vals.orderTotal)
+          .replace(/{shipping_method}/g, vals.shippingMethod)
+          .replace(/{item_count}/g, vals.itemCount)
+          .replace(/{payment_status}/g, vals.paymentStatus);
+
+      const shippingMethodName = order.shipping_lines?.[0]?.title || "";
+      const itemCount = (order.line_items || []).length;
+      const orderTotal = `${order.currency || ""} ${order.total_price || "0.00"}`;
+      const paymentStatus = order.financial_status || "";
+
+      const taskName = subscription.taskNameTemplate
+        ? resolveTemplate(subscription.taskNameTemplate, {
+            orderNumber,
+            customerName,
+            orderTotal,
+            shippingMethod: shippingMethodName,
+            itemCount: String(itemCount),
+            paymentStatus,
+          })
+        : `Order #${orderNumber} — ${customerName}`;
       
       // Parse Line Items for custom properties (artwork)
       const assetLinks = [];
@@ -210,7 +255,6 @@ async function handleJobProcess(request) {
       lines.push(`🚚 Shipping: ${currency} ${shippingCost}`);
       lines.push(`   Total:    ${currency} ${total}`);
 
-      const paymentStatus = order.financial_status;
       if (paymentStatus) {
         const payEmoji = paymentStatus === "paid" ? "✅" : "⏳";
         lines.push(`${payEmoji} Payment: ${paymentStatus}`);
@@ -271,9 +315,17 @@ async function handleJobProcess(request) {
       const orderCreatedAt = order.created_at ? new Date(order.created_at).getTime() : Date.now();
       const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
 
-      // Compile subtask names
+      // Compile subtask names (only if enabled by plan + subscription setting)
+      const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
+      const subtasksEnabled = isGrowthOrPro && subscription.subtasksEnabled;
       const subtaskNames = [];
-      if (order.line_items?.length > 0) {
+      if (subtasksEnabled && order.line_items?.length > 0) {
+        for (const item of order.line_items) {
+          const subtaskName = `${item.quantity}x ${item.title}${item.variant_title ? ` (${item.variant_title})` : ""}`;
+          subtaskNames.push(subtaskName);
+        }
+      } else if (isGrowthOrPro && !subtasksEnabled && order.line_items?.length > 0) {
+        // Still include subtask names for adapters that always create them on Growth/Pro
         for (const item of order.line_items) {
           const subtaskName = `${item.quantity}x ${item.title}${item.variant_title ? ` (${item.variant_title})` : ""}`;
           subtaskNames.push(subtaskName);
@@ -282,7 +334,6 @@ async function handleJobProcess(request) {
 
       // Compile attachment assets (Growth & Pro plans only)
       const attachmentAssets = [];
-      const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
       if (isGrowthOrPro && assetLinks.length > 0) {
         for (const asset of assetLinks) {
           const urlParts = asset.url.split("/");
@@ -356,6 +407,34 @@ async function handleJobProcess(request) {
             }
           });
           await incrementOrderCount(shopDomain);
+
+          // Phase 6: Tag the Shopify order with provider name for visibility in admin orders list
+          try {
+            const { default: shopifyPrisma } = await import("../db.server");
+            const sessionRec = await shopifyPrisma.session.findFirst({
+              where: { shop: shopDomain, isOnline: false },
+            });
+            if (sessionRec?.accessToken) {
+              const tagMutation = `mutation tagsAdd($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }`;
+              const shopifyAdminUrl = `https://${shopDomain}/admin/api/2024-01/graphql.json`;
+              await fetch(shopifyAdminUrl, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": sessionRec.accessToken,
+                },
+                body: JSON.stringify({
+                  query: tagMutation,
+                  variables: {
+                    id: `gid://shopify/Order/${order.id}`,
+                    tags: [`syncup-${platform}`],
+                  },
+                }),
+              }).catch((tagErr) => console.error("Order tagging failed:", tagErr));
+            }
+          } catch (tagErr) {
+            console.error("Order tagging error:", tagErr);
+          }
         }
       } catch (dbErr) {
         console.error("Polymorphic OrderSyncRecord write failed:", dbErr);

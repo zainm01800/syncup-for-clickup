@@ -30,16 +30,9 @@ export const action = async ({ request }) => {
 
   const order = payload;
 
-  if (order.fulfillment_status !== "fulfilled") {
-    console.log(
-      `Order ${order.id} not fulfilled (status: ${order.fulfillment_status}); skipping`
-    );
-    return new Response();
-  }
-
   const connection = await getConnection(shop);
   if (!connection?.accessToken) {
-    console.log(`No ClickUp connection for ${shop}; skipping`);
+    console.log(`No integration connection for ${shop}; skipping`);
     return new Response();
   }
 
@@ -47,14 +40,74 @@ export const action = async ({ request }) => {
     where: { shopDomain: shop, shopifyOrderId: String(order.id) },
     orderBy: { createdAt: "desc" }
   });
+
+  const syncTrigger = subscription.syncTrigger || "payment_confirmed";
+
+  if (!record) {
+    // Check if we should trigger sync now based on updated order details
+    let shouldSync = false;
+    if (syncTrigger === "payment_confirmed" && order.financial_status === "paid") {
+      shouldSync = true;
+    } else if (syncTrigger === "on_fulfillment_start" && order.fulfillment_status) {
+      shouldSync = true;
+    } else if (syncTrigger === "on_create") {
+      shouldSync = true;
+    }
+
+    if (shouldSync) {
+      console.log(`Order ${order.id} matches sync trigger "${syncTrigger}" on update; creating sync job.`);
+      try {
+        const existingJob = await prisma.syncJob.findFirst({
+          where: {
+            shopDomain: shop,
+            shopifyOrderId: String(order.id),
+            status: { in: ["pending", "processing"] }
+          }
+        });
+        if (!existingJob) {
+          await prisma.syncJob.create({
+            data: {
+              shopDomain: shop,
+              shopifyOrderId: String(order.id),
+              payload: JSON.stringify(order),
+              status: "pending",
+            }
+          });
+
+          const host = request.headers.get("host");
+          const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+          const triggerUrl = `${protocol}://${host}/api/jobs/process?secret=${process.env.SHOPIFY_API_SECRET}`;
+
+          fetch(triggerUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }).catch((err) => {
+            console.error("Failed to trigger background jobs process:", err);
+          });
+        }
+      } catch (dbErr) {
+        console.error("Failed to create sync job on order update:", dbErr);
+      }
+    }
+    return new Response();
+  }
+
+  if (order.fulfillment_status !== "fulfilled") {
+    console.log(
+      `Order ${order.id} not fully fulfilled (status: ${order.fulfillment_status}); skipping completion sync`
+    );
+    return new Response();
+  }
+
   if (
-    !record ||
     record.syncStatus === "fulfilled" ||
     record.targetRecordId === "failed" ||
     record.targetRecordId === "pending"
   ) {
     console.log(
-      `Order ${order.id} is already fulfilled or has no active integration record; skipping`
+      `Order ${order.id} is already marked fulfilled or has no active integration record; skipping`
     );
     return new Response();
   }

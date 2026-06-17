@@ -237,6 +237,8 @@ export async function getConnection(shop) {
     listConnections,
     fieldMappings: metadata?.fieldMappings || "[]",
     isFreePlan: metadata?.isFreePlan || false,
+    healthStatus: conn.healthStatus || "healthy",
+    lastHealthCheck: conn.lastHealthCheck,
   };
 }
 

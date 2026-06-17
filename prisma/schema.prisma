@@ -45,6 +45,10 @@ model Subscription {
   status                 String    @default("active") // active, paused, expired, cancelled
   ordersSyncedThisMonth  Int       @default(0) @map("orders_synced_this_month")
   ordersSyncedAllTime    Int       @default(0) @map("orders_synced_all_time")
+  // Merchant-configurable sync settings
+  taskNameTemplate       String?   @map("task_name_template") // e.g. "Order {order_number} — {customer_name}"
+  syncTrigger            String    @default("payment_confirmed") @map("sync_trigger") // payment_confirmed | on_create | on_fulfillment_start
+  subtasksEnabled        Boolean   @default(false) @map("subtasks_enabled")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
@@ -53,13 +57,15 @@ model Subscription {
 
 // Append-only event log for the merchant-facing activity feed.
 model ActivityLog {
-  id             Int      @id @default(autoincrement())
-  shopDomain     String   @map("shop_domain")
-  eventType      String   @map("event_type")
-  description    String
-  shopifyOrderId String?  @map("shopify_order_id")
-  clickupTaskId  String?  @map("clickup_task_id")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id              Int      @id @default(autoincrement())
+  shopDomain      String   @map("shop_domain")
+  eventType       String   @map("event_type")
+  description     String
+  shopifyOrderId  String?  @map("shopify_order_id")
+  clickupTaskId   String?  @map("clickup_task_id")
+  syncStatus      String?  @map("sync_status") // synced | failed | retrying | fulfilled
+  externalTaskUrl String?  @map("external_task_url") // deep link to ClickUp/Monday/Notion record
+  createdAt       DateTime @default(now()) @map("created_at")
 
   @@index([shopDomain, createdAt(sort: Desc)])
   @@map("activity_log")
@@ -93,6 +99,8 @@ model PlatformConnection {
   provider             IntegrationProvider
   isActive             Boolean             @default(true) @map("is_active")
   encryptedAccessToken String              @map("encrypted_access_token")
+  healthStatus         String              @default("healthy") @map("health_status") // healthy | degraded | error
+  lastHealthCheck      DateTime?           @map("last_health_check")
   createdAt            DateTime            @default(now()) @map("created_at")
   updatedAt            DateTime            @updatedAt @map("updated_at")
 
