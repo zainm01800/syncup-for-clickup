@@ -361,6 +361,9 @@ export async function downgradeToFree(shop) {
       status: "active",
       billingCycleStart: new Date(),
       ordersSyncedThisMonth: 0,
+      subtasksEnabled: false,
+      twoWaySyncEnabled: false,
+      taskDescriptionTemplate: null,
     },
   });
 }

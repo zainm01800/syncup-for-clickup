@@ -44,8 +44,9 @@ export const action = async ({ request }) => {
       where: { shopDomain: record.shopDomain }
     });
 
-    if (!sub || !sub.twoWaySyncEnabled) {
-      return json({ ok: true, message: "Two-way sync is not enabled for this store" });
+    const isGrowthOrPro = sub && (sub.planName.startsWith("growth") || sub.planName.startsWith("pro") || sub.planName === "trial");
+    if (!sub || !isGrowthOrPro || !sub.twoWaySyncEnabled) {
+      return json({ ok: true, message: "Two-way sync is not enabled or supported by your current plan" });
     }
 
     // Fulfill order in Shopify

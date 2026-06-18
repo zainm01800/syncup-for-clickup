@@ -124,13 +124,17 @@ async function syncToPlatformConnection({
   NotionAdapter
 }) {
   const shopDomain = connection.shopDomain;
+  const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
 
   // 1. Determine target list ID using routing constraints
   let targetListId = null;
   let targetListName = null;
 
   if (connection.listConnections && connection.listConnections.length > 0) {
-    const matchedTarget = connection.listConnections.find(tc => satisfiesRoutingConstraints(tc, order));
+    let matchedTarget = null;
+    if (isGrowthOrPro) {
+      matchedTarget = connection.listConnections.find(tc => satisfiesRoutingConstraints(tc, order));
+    }
     if (matchedTarget) {
       targetListId = matchedTarget.id;
       targetListName = matchedTarget.name;
@@ -187,7 +191,6 @@ async function syncToPlatformConnection({
 
   // 4. Build description (using custom template if Pro/Growth and configured, otherwise rich markdown)
   let description = "";
-  const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
   
   if (isGrowthOrPro && subscription.taskDescriptionTemplate?.trim()) {
     description = compileLiquidTemplate(
@@ -275,7 +278,7 @@ async function syncToPlatformConnection({
   }
 
   // 5. Bypassing Custom Field API writes entirely on ClickUp Free plan using a compiled Markdown table
-  if (connection.isFreePlan && connection.fieldMappings) {
+  if (connection.isFreePlan && isGrowthOrPro && connection.fieldMappings) {
     try {
       const mappings = JSON.parse(connection.fieldMappings);
       if (Array.isArray(mappings) && mappings.length > 0) {
@@ -337,7 +340,7 @@ async function syncToPlatformConnection({
     rawOrder: order,
     customerName,
     shippingCost: order.shipping_lines?.reduce((sum, s) => sum + parseFloat(s.price || "0"), 0).toFixed(2) ?? "0.00",
-    fieldMappings: connection.fieldMappings,
+    fieldMappings: isGrowthOrPro ? connection.fieldMappings : null,
     isFreePlan: connection.isFreePlan,
     subtasks: subtaskNames,
     attachments: attachmentAssets
