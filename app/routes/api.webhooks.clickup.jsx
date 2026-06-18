@@ -1,4 +1,4 @@
-import { json } from "react-router";
+const json = Response.json;
 import prisma from "../db.server";
 import { logActivity } from "../clickup.server";
 
