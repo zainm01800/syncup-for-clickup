@@ -70,8 +70,9 @@ export const action = async ({ request }) => {
         orderBy: { createdAt: "desc" },
       });
       if (existingJob?.payload) {
-        await prisma.syncJob.create({
-          data: { shopDomain: shop, shopifyOrderId: record.shopifyOrderId, payload: existingJob.payload, status: "pending", attempts: 0 },
+        await prisma.syncJob.update({
+          where: { id: existingJob.id },
+          data: { status: "pending", attempts: 0 },
         });
         await prisma.activityLog.update({ where: { id: recordId }, data: { syncStatus: "retrying" } });
         
