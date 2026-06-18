@@ -3,6 +3,7 @@ import { useLoaderData, useActionData, useNavigation, Form, redirect, Link } fro
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { PLANS, getTranslatedFeatures } from "../plans";
+import prisma from "../db.server";
 import {
   getOrCreateSubscription,
   createShopifySubscription,
@@ -68,7 +69,15 @@ export const loader = async ({ request }) => {
   const connection = await getConnection(shop);
   const selectedPlatform = url.searchParams.get("platform") || connection?.selectedPlatform || "clickup";
 
-  return { subscription, selectedPlatform };
+  const activePaidCount = await prisma.subscription.count({
+    where: {
+      planName: {
+        notIn: ["trial", "free", "expired", "cancelled"],
+      },
+    },
+  });
+
+  return { subscription, selectedPlatform, activePaidCount };
 };
 
 export const action = async ({ request }) => {
@@ -117,7 +126,7 @@ const C = {
 };
 
 export default function BillingPage() {
-  const { subscription, selectedPlatform } = useLoaderData();
+  const { subscription, selectedPlatform, activePaidCount = 0 } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -241,6 +250,9 @@ export default function BillingPage() {
     }
   };
 
+  const isPromoActive = activePaidCount < 10;
+  const spotsRemaining = Math.max(0, 10 - activePaidCount);
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -299,35 +311,67 @@ export default function BillingPage() {
         </header>
 
         {/* Grandfathering / Urgency Banner */}
-        <div style={{
-          background: "rgba(0, 196, 140, 0.05)",
-          border: `1px solid rgba(0, 196, 140, 0.2)`,
-          color: C.accent,
-          padding: 16,
-          borderRadius: 12,
-          fontSize: 13,
-          display: "flex",
-          alignItems: "start",
-          gap: 12,
-          marginBottom: 40,
-          maxWidth: 896,
-          marginLeft: "auto",
-          marginRight: "auto",
-          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1)",
-          backdropFilter: "blur(8px)",
-          boxSizing: "border-box"
-        }}>
-          <span style={{ fontSize: 20, lineHeight: 1 }}>🚀</span>
-          <div>
-            <strong style={{
-              fontWeight: 600,
-              display: "block",
-              marginBottom: 2,
-              color: C.text,
-            }}>LAUNCH SPECIAL OFFER</strong>
-            Install today to lock in these discounted B2B rates forever. Once our beta ends, pricing will increase for new installs. Existing merchants will remain grandfathered on these plans indefinitely!
+        {isPromoActive ? (
+          <div style={{
+            background: "rgba(0, 196, 140, 0.05)",
+            border: `1px solid rgba(0, 196, 140, 0.2)`,
+            color: C.accent,
+            padding: 16,
+            borderRadius: 12,
+            fontSize: 13,
+            display: "flex",
+            alignItems: "start",
+            gap: 12,
+            marginBottom: 40,
+            maxWidth: 896,
+            marginLeft: "auto",
+            marginRight: "auto",
+            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1)",
+            backdropFilter: "blur(8px)",
+            boxSizing: "border-box"
+          }}>
+            <span style={{ fontSize: 20, lineHeight: 1 }}>🚀</span>
+            <div>
+              <strong style={{
+                fontWeight: 600,
+                display: "block",
+                marginBottom: 2,
+                color: C.text,
+              }}>LAUNCH SPECIAL OFFER</strong>
+              Install today to lock in these discounted B2B rates forever. <strong style={{ color: C.text }}>Only {spotsRemaining} slots remaining!</strong> Once our beta ends, pricing will increase for new installs. Existing merchants will remain grandfathered on these plans indefinitely!
+            </div>
           </div>
-        </div>
+        ) : (
+          <div style={{
+            background: "rgba(255, 255, 255, 0.03)",
+            border: `1px solid ${C.border}`,
+            color: C.muted,
+            padding: 16,
+            borderRadius: 12,
+            fontSize: 13,
+            display: "flex",
+            alignItems: "start",
+            gap: 12,
+            marginBottom: 40,
+            maxWidth: 896,
+            marginLeft: "auto",
+            marginRight: "auto",
+            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.05)",
+            backdropFilter: "blur(8px)",
+            boxSizing: "border-box"
+          }}>
+            <span style={{ fontSize: 20, lineHeight: 1 }}>💡</span>
+            <div>
+              <strong style={{
+                fontWeight: 600,
+                display: "block",
+                marginBottom: 2,
+                color: C.text,
+              }}>PROMOTIONAL SLOTS CLAIMED</strong>
+              All 10 beta launch promotional slots have been claimed! Standard rates are now active for new installs. Existing promotional subscribers remain grandfathered at their initial rates.
+            </div>
+          </div>
+        )}
 
         {/* Action Notifications */}
         {actionData?.error && (
@@ -458,13 +502,31 @@ export default function BillingPage() {
             const isHighlighted = key === "growth";
             const spec = planSpecs[key];
 
-            const displayPrice = billingInterval === "annual" && key !== "free" 
-              ? spec.annualPriceDesc 
-              : spec.priceDesc;
+            let displayPrice = "";
+            let regularPrice = null;
+            let billedInfo = null;
 
-            const regularPrice = billingInterval === "annual" && key !== "free"
-              ? spec.regAnnual
-              : spec.regMonthly;
+            if (key === "free") {
+              displayPrice = "Free/mo";
+            } else {
+              if (billingInterval === "annual") {
+                if (isPromoActive) {
+                  displayPrice = spec.annualPriceDesc;
+                  regularPrice = `$${(parseFloat(spec.regAnnual.replace("$", "")) / 12).toFixed(2)}/mo`;
+                  billedInfo = `${spec.billedDesc} (${spec.priceDesc} equivalent)`;
+                } else {
+                  displayPrice = `$${(parseFloat(spec.regAnnual.replace("$", "")) / 12).toFixed(2)}/mo`;
+                  billedInfo = `Billed annually as ${spec.regAnnual} (${spec.regMonthly} equivalent)`;
+                }
+              } else {
+                if (isPromoActive) {
+                  displayPrice = spec.priceDesc;
+                  regularPrice = spec.regMonthly;
+                } else {
+                  displayPrice = spec.regMonthly;
+                }
+              }
+            }
 
             const isDowngradeOption = key === "free" && 
               (currentPlanKey.startsWith("standard") || currentPlanKey.startsWith("growth") || currentPlanKey.startsWith("pro"));
@@ -577,12 +639,12 @@ export default function BillingPage() {
                         fontSize: 14,
                         fontWeight: 500,
                       }}>
-                        {key === "free" ? "/mo" : `/${displayPrice.split("/")[1]}`}
+                        /{key === "free" ? "mo" : displayPrice.split("/")[1]}
                       </span>
                     </div>
 
                     {/* Annual info */}
-                    {billingInterval === "annual" && key !== "free" && (
+                    {billingInterval === "annual" && key !== "free" && billedInfo && (
                       <div style={{
                         fontSize: 11,
                         color: C.muted,
@@ -599,7 +661,7 @@ export default function BillingPage() {
                           borderRadius: 9999,
                           backgroundColor: C.accent,
                         }} />
-                        {spec.billedDesc} ({spec.priceDesc} equivalent)
+                        {billedInfo}
                       </div>
                     )}
                   </div>

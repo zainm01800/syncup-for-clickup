@@ -216,6 +216,20 @@ export async function createShopifySubscription(admin, shop, planKey) {
   const plan = PLANS[planKey];
   if (!plan) throw new Error("Plan not found");
 
+  const activePaidCount = await prisma.subscription.count({
+    where: {
+      planName: {
+        notIn: ["trial", "free", "expired", "cancelled"],
+      },
+    },
+  });
+  const isPromoActive = activePaidCount < 10;
+  
+  let chargedPrice = plan.price;
+  if (!isPromoActive && planKey !== "free") {
+    chargedPrice = plan.regularPrice || plan.price;
+  }
+
   const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?activated=${planKey}`;
   const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
@@ -253,7 +267,7 @@ export async function createShopifySubscription(admin, shop, planKey) {
           {
             plan: {
               appRecurringPricingDetails: {
-                price: { amount: parseFloat(plan.price.toFixed(2)), currencyCode: "USD" },
+                price: { amount: parseFloat(chargedPrice.toFixed(2)), currencyCode: "USD" },
                 interval: interval,
               },
             },
