@@ -156,31 +156,31 @@ export default function BillingPage() {
       key: "standard",
       badge: "Best for Starters",
       priceDesc: "$29.99/mo",
-      annualPriceDesc: "$19.99/mo",
-      billedDesc: "Billed annually as $239",
-      monthlyEquivalent: "19.99",
+      annualPriceDesc: "$26.91/mo",
+      billedDesc: "Billed annually as $323",
+      monthlyEquivalent: "26.91",
       regMonthly: "$49.99",
-      regAnnual: "$399",
+      regAnnual: "$539",
     },
     growth: {
       key: "growth",
       badge: "Most Popular",
       priceDesc: "$49.99/mo",
-      annualPriceDesc: "$34.99/mo",
-      billedDesc: "Billed annually as $419",
-      monthlyEquivalent: "34.99",
+      annualPriceDesc: "$44.91/mo",
+      billedDesc: "Billed annually as $539",
+      monthlyEquivalent: "44.91",
       regMonthly: "$79.99",
-      regAnnual: "$699",
+      regAnnual: "$863",
     },
     pro: {
       key: "pro",
       badge: "Concierge Setup Included",
       priceDesc: "$99.99/mo",
-      annualPriceDesc: "$69.99/mo",
-      billedDesc: "Billed annually as $839",
-      monthlyEquivalent: "69.99",
+      annualPriceDesc: "$89.91/mo",
+      billedDesc: "Billed annually as $1079",
+      monthlyEquivalent: "89.91",
       regMonthly: "$149.99",
-      regAnnual: "$1199",
+      regAnnual: "$1619",
     },
   };
 
@@ -481,7 +481,7 @@ export default function BillingPage() {
               border: `1px solid rgba(0, 196, 140, 0.2)`,
               display: "inline-block",
             }}>
-              Save ~30%
+              Save ~10%
             </span>
           </span>
         </div>

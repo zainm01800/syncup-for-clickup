@@ -35,8 +35,8 @@ export const PLANS = {
   standard_annual: {
     key: "standard_annual",
     name: "Standard Annual",
-    price: 239,
-    regularPrice: 399,
+    price: 323,
+    regularPrice: 539,
     interval: "ANNUAL",
     shopifyPlanName: "SyncUp Standard Annual",
     annual: true,
@@ -70,8 +70,8 @@ export const PLANS = {
   growth_annual: {
     key: "growth_annual",
     name: "Growth Annual",
-    price: 419,
-    regularPrice: 699,
+    price: 539,
+    regularPrice: 863,
     interval: "ANNUAL",
     shopifyPlanName: "SyncUp Growth Annual",
     annual: true,
@@ -105,8 +105,8 @@ export const PLANS = {
   pro_annual: {
     key: "pro_annual",
     name: "Pro Annual",
-    price: 839,
-    regularPrice: 1199,
+    price: 1079,
+    regularPrice: 1619,
     interval: "ANNUAL",
     shopifyPlanName: "SyncUp Pro Annual",
     annual: true,
