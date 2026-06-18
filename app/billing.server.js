@@ -261,7 +261,7 @@ export async function createShopifySubscription(admin, shop, planKey) {
         ],
         returnUrl,
         test: true, // test mode enabled
-        replacementBehavior: "CHARGE_ON_NEXT_BILLING_CYCLE",
+        replacementBehavior: "APPLY_IMMEDIATELY",
       },
     }
   );
