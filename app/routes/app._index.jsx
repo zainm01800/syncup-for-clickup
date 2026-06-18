@@ -37,54 +37,56 @@ export const loader = async ({ request }) => {
     // Throttled connection health check (run at most once every 5 minutes)
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     if (!connection.lastHealthCheck || new Date(connection.lastHealthCheck) < fiveMinutesAgo) {
-      try {
-        let healthy = false;
-        if (connection.selectedPlatform === "clickup") {
-          const res = await fetch("https://api.clickup.com/api/v2/user", {
-            headers: { Authorization: connection.accessToken },
-          });
-          healthy = res.status === 200;
-        } else if (connection.selectedPlatform === "monday") {
-          const res = await fetch("https://api.monday.com/v2", {
-            method: "POST",
-            headers: {
-              Authorization: connection.accessToken,
-              "Content-Type": "application/json",
-              "API-Version": "2023-10",
-            },
-            body: JSON.stringify({ query: "{ me { id } }" }),
-          });
-          healthy = res.status === 200;
-        } else if (connection.selectedPlatform === "notion") {
-          const res = await fetch("https://api.notion.com/v1/users/me", {
-            headers: {
-              Authorization: `Bearer ${connection.accessToken}`,
-              "Notion-Version": "2022-06-28",
-            },
-          });
-          healthy = res.status === 200;
-        }
-
-        healthStatus = healthy ? "healthy" : "error";
-        await prisma.platformConnection.update({
-          where: { id: connection.id },
-          data: {
-            healthStatus,
-            lastHealthCheck: new Date(),
-          },
-        });
-      } catch (err) {
-        console.error("Health check failed:", err);
-        healthStatus = "error";
+      // Run health check in background to prevent blocking loader response and causing navigation latency
+      (async () => {
         try {
+          let healthy = false;
+          if (connection.selectedPlatform === "clickup") {
+            const res = await fetch("https://api.clickup.com/api/v2/user", {
+              headers: { Authorization: connection.accessToken },
+            });
+            healthy = res.status === 200;
+          } else if (connection.selectedPlatform === "monday") {
+            const res = await fetch("https://api.monday.com/v2", {
+              method: "POST",
+              headers: {
+                Authorization: connection.accessToken,
+                "Content-Type": "application/json",
+                "API-Version": "2023-10",
+              },
+              body: JSON.stringify({ query: "{ me { id } }" }),
+            });
+            healthy = res.status === 200;
+          } else if (connection.selectedPlatform === "notion") {
+            const res = await fetch("https://api.notion.com/v1/users/me", {
+              headers: {
+                Authorization: `Bearer ${connection.accessToken}`,
+                "Notion-Version": "2022-06-28",
+              },
+            });
+            healthy = res.status === 200;
+          }
+
+          const updatedHealth = healthy ? "healthy" : "error";
           await prisma.platformConnection.update({
             where: { id: connection.id },
-            data: { healthStatus: "error", lastHealthCheck: new Date() },
+            data: {
+              healthStatus: updatedHealth,
+              lastHealthCheck: new Date(),
+            },
           });
-        } catch (dbErr) {
-          console.error("Failed to update health check error in DB:", dbErr);
+        } catch (err) {
+          console.error("Background health check failed:", err);
+          try {
+            await prisma.platformConnection.update({
+              where: { id: connection.id },
+              data: { healthStatus: "error", lastHealthCheck: new Date() },
+            });
+          } catch (dbErr) {
+            console.error("Failed to update health check error in DB:", dbErr);
+          }
         }
-      }
+      })();
     }
 
     try {
@@ -779,6 +781,81 @@ const BANNER_COLORS = {
   orange: { bg: "rgba(255,102,0,0.12)", border: "1px solid #ff6600", color: "#ff6600" },
   red: { bg: "rgba(255,68,68,0.12)", border: "1px solid #ff4444", color: "#ff4444" },
 };
+
+function InfoTooltip({ text }) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <span
+      style={{
+        position: "relative",
+        display: "inline-block",
+        cursor: "pointer",
+        marginLeft: 4,
+        userSelect: "none",
+      }}
+      onMouseEnter={() => setVisible(true)}
+      onMouseLeave={() => setVisible(false)}
+      onClick={(e) => {
+        e.stopPropagation();
+        setVisible(!visible);
+      }}
+    >
+      <span style={{ color: "#9a9a9a", fontSize: 13 }}>ⓘ</span>
+      {visible && (
+        <span
+          style={{
+            position: "absolute",
+            bottom: "135%",
+            left: "50%",
+            transform: "translateX(-50%)",
+            backgroundColor: "#1c1c1c",
+            color: "#ffffff",
+            padding: "8px 12px",
+            borderRadius: "6px",
+            border: "1px solid #333333",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+            fontSize: "12px",
+            lineHeight: "1.4",
+            width: "220px",
+            whiteSpace: "normal",
+            zIndex: 99999,
+            pointerEvents: "none",
+            display: "block",
+            textAlign: "left",
+            fontWeight: "normal",
+            fontStyle: "normal",
+          }}
+        >
+          {text}
+          <span
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: "50%",
+              transform: "translateX(-50%)",
+              borderWidth: "5px",
+              borderStyle: "solid",
+              borderColor: "#333333 transparent transparent transparent",
+            }}
+          />
+          <span
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: "50%",
+              transform: "translateX(-50%)",
+              borderWidth: "4px",
+              borderStyle: "solid",
+              borderColor: "#1c1c1c transparent transparent transparent",
+              marginTop: "-1px",
+            }}
+          />
+        </span>
+      )}
+    </span>
+  );
+}
 
 export default function Index() {
   const {
@@ -1786,7 +1863,7 @@ export default function Index() {
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <label style={styles.formLabel} htmlFor="platform_token">
                                 {selectedTool === "monday" ? "Monday.com Personal Access Token" : "Notion Integration Token"}{" "}
-                                <span title={selectedTool === "monday" ? "A secure personal access token generated from your Monday.com developer settings." : "A secure integration token generated from your Notion developer settings."} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                <InfoTooltip text={selectedTool === "monday" ? "A secure personal access token generated from your Monday.com developer settings." : "A secure integration token generated from your Notion developer settings."} />
                               </label>
                               <input
                                 id="platform_token"
@@ -1854,7 +1931,7 @@ export default function Index() {
                                 <div style={{ flex: 2, minWidth: "150px" }}>
                                   <label style={styles.formLabel} htmlFor={`list_${index}`}>
                                     {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}{" "}
-                                    <span title={`The specific destination ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} where synced order tasks will be created.`} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                    <InfoTooltip text={`The specific destination ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} where synced order tasks will be created.`} />
                                   </label>
                                   <select
                                     id={`list_${index}`}
@@ -1885,7 +1962,7 @@ export default function Index() {
                                   <>
                                     <div style={{ flex: 1, minWidth: "120px" }}>
                                       <label style={styles.formLabel} htmlFor={`kw_${index}`}>
-                                        Product Keyword <span title="Only route orders containing products whose title, vendor, or SKU matches this word (e.g. 'boot')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                        Product Keyword <InfoTooltip text="Only route orders containing products whose title, vendor, or SKU matches this word (e.g. 'boot')." />
                                       </label>
                                       <input
                                         id={`kw_${index}`}
@@ -1903,7 +1980,7 @@ export default function Index() {
                                     </div>
                                     <div style={{ flex: 1, minWidth: "120px" }}>
                                       <label style={styles.formLabel} htmlFor={`loc_${index}`}>
-                                        Location ID <span title="Only route orders if they are fulfilled from this physical Shopify warehouse/location ID." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                        Location ID <InfoTooltip text="Only route orders if they are fulfilled from this physical Shopify warehouse/location ID." />
                                       </label>
                                       <input
                                         id={`loc_${index}`}
@@ -1921,7 +1998,7 @@ export default function Index() {
                                     </div>
                                     <div style={{ flex: 1, minWidth: "120px" }}>
                                       <label style={styles.formLabel} htmlFor={`tag_${index}`}>
-                                        Order Tag <span title="Only route orders that carry this specific Shopify order tag or product tag (e.g. 'B2B')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                        Order Tag <InfoTooltip text="Only route orders that carry this specific Shopify order tag or product tag (e.g. 'B2B')." />
                                       </label>
                                       <input
                                         id={`tag_${index}`}
@@ -2171,7 +2248,7 @@ export default function Index() {
                                   <div style={{ flex: 2, minWidth: "150px" }}>
                                     <label style={styles.formLabel} htmlFor={`list_${index}`}>
                                       {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}{" "}
-                                      <span title={`The specific destination ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} where synced order tasks will be created.`} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                      <InfoTooltip text={`The specific destination ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} where synced order tasks will be created.`} />
                                     </label>
                                     <select
                                       id={`list_${index}`}
@@ -2202,7 +2279,7 @@ export default function Index() {
                                     <>
                                       <div style={{ flex: 1, minWidth: "120px" }}>
                                         <label style={styles.formLabel} htmlFor={`kw_${index}`}>
-                                          Product Keyword <span title="Only route orders containing products whose title, vendor, or SKU matches this word (e.g. 'boot')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                          Product Keyword <InfoTooltip text="Only route orders containing products whose title, vendor, or SKU matches this word (e.g. 'boot')." />
                                         </label>
                                         <input
                                           id={`kw_${index}`}
@@ -2220,7 +2297,7 @@ export default function Index() {
                                       </div>
                                       <div style={{ flex: 1, minWidth: "120px" }}>
                                         <label style={styles.formLabel} htmlFor={`loc_${index}`}>
-                                          Location ID <span title="Only route orders if they are fulfilled from this physical Shopify warehouse/location ID." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                          Location ID <InfoTooltip text="Only route orders if they are fulfilled from this physical Shopify warehouse/location ID." />
                                         </label>
                                         <input
                                           id={`loc_${index}`}
@@ -2238,7 +2315,7 @@ export default function Index() {
                                       </div>
                                       <div style={{ flex: 1, minWidth: "120px" }}>
                                         <label style={styles.formLabel} htmlFor={`tag_${index}`}>
-                                          Order Tag <span title="Only route orders that carry this specific Shopify order tag or product tag (e.g. 'B2B')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                          Order Tag <InfoTooltip text="Only route orders that carry this specific Shopify order tag or product tag (e.g. 'B2B')." />
                                         </label>
                                         <input
                                           id={`tag_${index}`}
@@ -2440,11 +2517,11 @@ export default function Index() {
                                   {/* Table Header */}
                                   <div className="grid grid-cols-12 bg-zinc-900/50 p-4 border-b border-zinc-800 font-semibold text-xs tracking-wider uppercase text-zinc-400">
                                     <div className="col-span-5">
-                                      Shopify Source Field <span title="The data point from the Shopify order (e.g. Customer Email or Shipping Cost)." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                      Shopify Source Field <InfoTooltip text="The data point from the Shopify order (e.g. Customer Email or Shipping Cost)." />
                                     </div>
                                     <div className="col-span-2 text-center">Flow</div>
                                     <div className="col-span-5">
-                                      Destination {termFieldName} <span title={`The custom field or column in your connected ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} to map the data to.`} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                      Destination {termFieldName} <InfoTooltip text={`The custom field or column in your connected ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} to map the data to.`} />
                                     </div>
                                   </div>
 
@@ -2548,7 +2625,7 @@ export default function Index() {
                           {/* Task Name Template */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="taskNameTemplate">
-                              Task Name Template <span title="Customize the name of the created task. Use bracket variables like {order_number} or {customer_name} to dynamically inject order data." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                              Task Name Template <InfoTooltip text="Customize the name of the created task. Use bracket variables like {order_number} or {customer_name} to dynamically inject order data." />
                             </label>
                             <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
                               Customise the task title using tokens. Leave blank to use the default.
@@ -2614,7 +2691,7 @@ export default function Index() {
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="taskDescriptionTemplate">
-                                Task Description Template <span title="Customize the description body of the task. Supports rich text, custom tokens, and line item tables." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                Task Description Template <InfoTooltip text="Customize the description body of the task. Supports rich text, custom tokens, and line item tables." />
                               </label>
                               {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                 <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
@@ -2712,7 +2789,7 @@ export default function Index() {
                           {/* Sync Trigger Selector */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <label style={{ ...styles.formLabel, marginBottom: 0 }}>
-                              Sync Trigger <span title="Choose the exact event in Shopify that triggers task creation: when payment is confirmed (default), immediately when order is placed, or when fulfillment begins." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                              Sync Trigger <InfoTooltip text="Choose the exact event in Shopify that triggers task creation: when payment is confirmed (default), immediately when order is placed, or when fulfillment begins." />
                             </label>
                             <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
                               Choose when a task is created for new orders.
@@ -2747,7 +2824,7 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Create one subtask per line item <span title="When enabled, each product variant in the Shopify order is created as a separate subtask under the main task." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                Create one subtask per line item <InfoTooltip text="When enabled, each product variant in the Shopify order is created as a separate subtask under the main task." />
                                 {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
                                 )}
@@ -2794,7 +2871,7 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Enable Two-Way Status Sync <span title="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                Enable Two-Way Status Sync <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." />
                                 {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
                                 )}
