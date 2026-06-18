@@ -1785,7 +1785,8 @@ export default function Index() {
                             <input type="hidden" name="platform" value={selectedTool} />
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <label style={styles.formLabel} htmlFor="platform_token">
-                                {selectedTool === "monday" ? "Monday.com Personal Access Token" : "Notion Integration Token"}
+                                {selectedTool === "monday" ? "Monday.com Personal Access Token" : "Notion Integration Token"}{" "}
+                                <span title={selectedTool === "monday" ? "A secure personal access token generated from your Monday.com developer settings." : "A secure integration token generated from your Notion developer settings."} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                               </label>
                               <input
                                 id="platform_token"
@@ -1852,7 +1853,8 @@ export default function Index() {
                               <div key={index} style={styles.connectionRow}>
                                 <div style={{ flex: 2, minWidth: "150px" }}>
                                   <label style={styles.formLabel} htmlFor={`list_${index}`}>
-                                    {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}
+                                    {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}{" "}
+                                    <span title={`The specific destination ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} where synced order tasks will be created.`} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                                   </label>
                                   <select
                                     id={`list_${index}`}
@@ -1882,7 +1884,9 @@ export default function Index() {
                                 {listLimit > 1 && (
                                   <>
                                     <div style={{ flex: 1, minWidth: "120px" }}>
-                                      <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword</label>
+                                      <label style={styles.formLabel} htmlFor={`kw_${index}`}>
+                                        Product Keyword <span title="Only route orders containing products whose title, vendor, or SKU matches this word (e.g. 'boot')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                      </label>
                                       <input
                                         id={`kw_${index}`}
                                         type="text"
@@ -1898,7 +1902,9 @@ export default function Index() {
                                       />
                                     </div>
                                     <div style={{ flex: 1, minWidth: "120px" }}>
-                                      <label style={styles.formLabel} htmlFor={`loc_${index}`}>Location ID</label>
+                                      <label style={styles.formLabel} htmlFor={`loc_${index}`}>
+                                        Location ID <span title="Only route orders if they are fulfilled from this physical Shopify warehouse/location ID." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                      </label>
                                       <input
                                         id={`loc_${index}`}
                                         type="text"
@@ -1914,7 +1920,9 @@ export default function Index() {
                                       />
                                     </div>
                                     <div style={{ flex: 1, minWidth: "120px" }}>
-                                      <label style={styles.formLabel} htmlFor={`tag_${index}`}>Order Tag</label>
+                                      <label style={styles.formLabel} htmlFor={`tag_${index}`}>
+                                        Order Tag <span title="Only route orders that carry this specific Shopify order tag or product tag (e.g. 'B2B')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                      </label>
                                       <input
                                         id={`tag_${index}`}
                                         type="text"
@@ -2162,7 +2170,8 @@ export default function Index() {
                                 <div key={index} style={styles.connectionRow}>
                                   <div style={{ flex: 2, minWidth: "150px" }}>
                                     <label style={styles.formLabel} htmlFor={`list_${index}`}>
-                                      {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}
+                                      {selectedPlatform === "clickup" ? "ClickUp List" : selectedPlatform === "monday" ? "Monday Board" : "Notion Database"}{" "}
+                                      <span title={`The specific destination ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} where synced order tasks will be created.`} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                                     </label>
                                     <select
                                       id={`list_${index}`}
@@ -2192,7 +2201,9 @@ export default function Index() {
                                   {listLimit > 1 && (
                                     <>
                                       <div style={{ flex: 1, minWidth: "120px" }}>
-                                        <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword</label>
+                                        <label style={styles.formLabel} htmlFor={`kw_${index}`}>
+                                          Product Keyword <span title="Only route orders containing products whose title, vendor, or SKU matches this word (e.g. 'boot')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                        </label>
                                         <input
                                           id={`kw_${index}`}
                                           type="text"
@@ -2208,7 +2219,9 @@ export default function Index() {
                                         />
                                       </div>
                                       <div style={{ flex: 1, minWidth: "120px" }}>
-                                        <label style={styles.formLabel} htmlFor={`loc_${index}`}>Location ID</label>
+                                        <label style={styles.formLabel} htmlFor={`loc_${index}`}>
+                                          Location ID <span title="Only route orders if they are fulfilled from this physical Shopify warehouse/location ID." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                        </label>
                                         <input
                                           id={`loc_${index}`}
                                           type="text"
@@ -2224,7 +2237,9 @@ export default function Index() {
                                         />
                                       </div>
                                       <div style={{ flex: 1, minWidth: "120px" }}>
-                                        <label style={styles.formLabel} htmlFor={`tag_${index}`}>Order Tag</label>
+                                        <label style={styles.formLabel} htmlFor={`tag_${index}`}>
+                                          Order Tag <span title="Only route orders that carry this specific Shopify order tag or product tag (e.g. 'B2B')." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                        </label>
                                         <input
                                           id={`tag_${index}`}
                                           type="text"
@@ -2424,9 +2439,13 @@ export default function Index() {
                                 <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
                                   {/* Table Header */}
                                   <div className="grid grid-cols-12 bg-zinc-900/50 p-4 border-b border-zinc-800 font-semibold text-xs tracking-wider uppercase text-zinc-400">
-                                    <div className="col-span-5">Shopify Source Field</div>
+                                    <div className="col-span-5">
+                                      Shopify Source Field <span title="The data point from the Shopify order (e.g. Customer Email or Shipping Cost)." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                    </div>
                                     <div className="col-span-2 text-center">Flow</div>
-                                    <div className="col-span-5">Destination {termFieldName}</div>
+                                    <div className="col-span-5">
+                                      Destination {termFieldName} <span title={`The custom field or column in your connected ${selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} to map the data to.`} style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
+                                    </div>
                                   </div>
 
                                   {/* Mappings */}
@@ -2529,7 +2548,7 @@ export default function Index() {
                           {/* Task Name Template */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="taskNameTemplate">
-                              Task Name Template
+                              Task Name Template <span title="Customize the name of the created task. Use bracket variables like {order_number} or {customer_name} to dynamically inject order data." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                             </label>
                             <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
                               Customise the task title using tokens. Leave blank to use the default.
@@ -2595,7 +2614,7 @@ export default function Index() {
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="taskDescriptionTemplate">
-                                Task Description Template
+                                Task Description Template <span title="Customize the description body of the task. Supports rich text, custom tokens, and line item tables." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                               </label>
                               {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                 <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
@@ -2693,7 +2712,7 @@ export default function Index() {
                           {/* Sync Trigger Selector */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <label style={{ ...styles.formLabel, marginBottom: 0 }}>
-                              Sync Trigger
+                              Sync Trigger <span title="Choose the exact event in Shopify that triggers task creation: when payment is confirmed (default), immediately when order is placed, or when fulfillment begins." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                             </label>
                             <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
                               Choose when a task is created for new orders.
@@ -2728,7 +2747,7 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Create one subtask per line item
+                                Create one subtask per line item <span title="When enabled, each product variant in the Shopify order is created as a separate subtask under the main task." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                                 {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
                                 )}
@@ -2775,7 +2794,7 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Enable Two-Way Status Sync
+                                Enable Two-Way Status Sync <span title="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." style={{ cursor: "help", color: C.muted, marginLeft: 4 }}>ⓘ</span>
                                 {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
                                 )}
