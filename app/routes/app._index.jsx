@@ -819,6 +819,7 @@ export default function Index() {
 
   const [billingInterval, setBillingInterval] = useState("monthly"); // monthly or annual
   const [fieldMappingsList, setFieldMappingsList] = useState(fieldMappings || []);
+  const [activeTab, setActiveTab] = useState("connections"); // connections, mappings, settings
   const [selectedTool, setSelectedTool] = useState(null);
   const [localTaskTemplate, setLocalTaskTemplate] = useState(taskNameTemplate || "");
   const [localTaskDescriptionTemplate, setLocalTaskDescriptionTemplate] = useState(taskDescriptionTemplate || "");
@@ -1201,7 +1202,7 @@ export default function Index() {
       `}</style>
 
       <div style={styles.page}>
-        <div style={styles.container} className="su-container">
+        <div style={{ ...styles.container, maxWidth: wizardStep === "dashboard" ? 1200 : 640 }} className="su-container">
           {/* Header */}
           <header style={styles.header}>
             <div style={styles.logoMark}>
@@ -2041,8 +2042,68 @@ export default function Index() {
                     {/* LEFT COLUMN: Settings & Custom Field Mapping */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                       
-                      {/* Connection status card */}
-                      <section style={styles.card}>
+                      {/* Tab Navigation */}
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", borderBottom: `1px solid ${C.border}`, paddingBottom: 16, marginBottom: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("connections")}
+                          style={{
+                            background: activeTab === "connections" ? C.accent : "rgba(255, 255, 255, 0.03)",
+                            color: activeTab === "connections" ? "#03251c" : C.muted,
+                            border: `1px solid ${activeTab === "connections" ? C.accent : C.border}`,
+                            padding: "10px 18px",
+                            borderRadius: 10,
+                            cursor: "pointer",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            transition: "all 0.2s ease",
+                            outline: "none"
+                          }}
+                        >
+                          🔌 Connections & Routing
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("mappings")}
+                          style={{
+                            background: activeTab === "mappings" ? C.accent : "rgba(255, 255, 255, 0.03)",
+                            color: activeTab === "mappings" ? "#03251c" : C.muted,
+                            border: `1px solid ${activeTab === "mappings" ? C.accent : C.border}`,
+                            padding: "10px 18px",
+                            borderRadius: 10,
+                            cursor: "pointer",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            transition: "all 0.2s ease",
+                            outline: "none"
+                          }}
+                        >
+                          📋 Field Mapping
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("settings")}
+                          style={{
+                            background: activeTab === "settings" ? C.accent : "rgba(255, 255, 255, 0.03)",
+                            color: activeTab === "settings" ? "#03251c" : C.muted,
+                            border: `1px solid ${activeTab === "settings" ? C.accent : C.border}`,
+                            padding: "10px 18px",
+                            borderRadius: 10,
+                            cursor: "pointer",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            transition: "all 0.2s ease",
+                            outline: "none"
+                          }}
+                        >
+                          ⚙️ Sync Settings
+                        </button>
+                      </div>
+
+                      {activeTab === "connections" && (
+                        <>
+                          {/* Connection status card */}
+                          <section style={styles.card}>
                         <div style={styles.cardHeaderRow}>
                           <div style={styles.statusRow}>
                             <span style={styles.statusDot} />
@@ -2218,9 +2279,13 @@ export default function Index() {
                           </Form>
                         )}
                       </section>
+                        </>
+                      )}
 
-                      {/* Custom Field Mapping */}
-                      <section style={styles.card}>
+                      {activeTab === "mappings" && (
+                        <>
+                          {/* Custom Field Mapping */}
+                          <section style={styles.card}>
                         {(() => {
                           const isTrial = subscription.planName === "trial";
                           const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
@@ -2450,9 +2515,13 @@ export default function Index() {
                           );
                         })()}
                       </section>
+                        </>
+                      )}
 
-                      {/* Sync Settings */}
-                      <section style={styles.card}>
+                      {activeTab === "settings" && (
+                        <>
+                          {/* Sync Settings */}
+                          <section style={styles.card}>
                         <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Sync Settings</h2>
                         <p style={styles.cardText}>
                           Configure how and when orders are synced to your connected workspace tool.
@@ -2763,6 +2832,8 @@ export default function Index() {
                           </button>
                         </Form>
                       </section>
+                        </>
+                      )}
 
                     </div>
 
