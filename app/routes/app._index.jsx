@@ -8,8 +8,8 @@ import { PLANS, getTranslatedFeatures } from "../plans";
 import prisma from "../db.server";
 
 // Global API Cache to speed up navigation on and off other routes (like Billing)
-if (!global.apiCache) {
-  global.apiCache = {
+if (!globalThis.apiCache) {
+  globalThis.apiCache = {
     targets: new Map(),
     fields: new Map(),
   };
@@ -95,14 +95,14 @@ export const loader = async ({ request }) => {
     try {
       const cacheKey = `${shop}:${connection.selectedPlatform}:${connection.accessToken}`;
       const now = Date.now();
-      const cachedTargets = global.apiCache.targets.get(cacheKey);
+      const cachedTargets = globalThis.apiCache.targets.get(cacheKey);
       if (cachedTargets && (now - cachedTargets.timestamp < CACHE_TTL)) {
         lists = cachedTargets.data;
       } else {
         const { IntegrationFactory } = await import("../adapters/factory");
         const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
         lists = await adapter.fetchTargets();
-        global.apiCache.targets.set(cacheKey, { data: lists, timestamp: now });
+        globalThis.apiCache.targets.set(cacheKey, { data: lists, timestamp: now });
       }
     } catch (error) {
       console.error(`Failed to load targets for ${shop}:`, error);
@@ -155,14 +155,14 @@ export const loader = async ({ request }) => {
         try {
           const cacheKey = `${shop}:${connection.selectedPlatform}:${connection.listId}:${connection.accessToken}`;
           const now = Date.now();
-          const cachedFields = global.apiCache.fields.get(cacheKey);
+          const cachedFields = globalThis.apiCache.fields.get(cacheKey);
           if (cachedFields && (now - cachedFields.timestamp < CACHE_TTL)) {
             clickupFields = cachedFields.data;
           } else {
             const { IntegrationFactory } = await import("../adapters/factory");
             const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
             clickupFields = await adapter.fetchFields(connection.listId);
-            global.apiCache.fields.set(cacheKey, { data: clickupFields, timestamp: now });
+            globalThis.apiCache.fields.set(cacheKey, { data: clickupFields, timestamp: now });
           }
         } catch (e) {
           console.error("Failed to load destination fields in loader:", e);
@@ -1442,21 +1442,17 @@ export default function Index() {
                       </div>
 
                       {/* Submit action */}
-                      <Form method="post" action={`/app/billing?platform=${selectedPlatform}`} target="_top" className="mt-auto">
-                        <input type="hidden" name="intent" value="upgrade" />
-                        <input type="hidden" name="plan" value={planKey} />
-                        <button
-                          type="submit"
-                          className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
-                            isHighlighted
-                              ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
-                              : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
-                          }`}
-                          disabled={isSubmitting}
-                        >
-                          {isSubmitting ? "Connecting..." : `Select ${plan.name.split(" ")[0]}`}
-                        </button>
-                      </Form>
+                      <Link
+                        to={`/app/billing?platform=${selectedPlatform}`}
+                        className={`w-full py-2.5 rounded-xl text-xs font-bold text-center block transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
+                          isHighlighted
+                            ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
+                            : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
+                        }`}
+                        style={{ textDecoration: "none" }}
+                      >
+                        Select {plan.name.split(" ")[0]}
+                      </Link>
                     </div>
                   );
                 })}
@@ -1719,27 +1715,23 @@ export default function Index() {
                                       </div>
 
                                       {/* Submit action */}
-                                      <Form method="post" action={`/app/billing?platform=clickup`} target="_top" className="mt-auto">
-                                        <input type="hidden" name="intent" value="upgrade" />
-                                        <input type="hidden" name="plan" value={planKey} />
-                                        <button
-                                          type="submit"
-                                          className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
-                                            isHighlighted
-                                              ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
-                                              : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
-                                          }`}
-                                          style={{
-                                            border: isHighlighted ? "none" : `1px solid ${C.border}`,
-                                            background: isHighlighted ? C.accent : "#1a1a1a",
-                                            color: isHighlighted ? "#03251c" : C.text,
-                                            width: "100%",
-                                          }}
-                                          disabled={isSubmitting}
-                                        >
-                                          {isSubmitting ? "Connecting..." : `Select ${plan.name.split(" ")[0]}`}
-                                        </button>
-                                      </Form>
+                                      <Link
+                                        to={`/app/billing?platform=clickup`}
+                                        className={`w-full py-2.5 rounded-xl text-xs font-bold text-center block transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
+                                          isHighlighted
+                                            ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
+                                            : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
+                                        }`}
+                                        style={{
+                                          border: isHighlighted ? "none" : `1px solid ${C.border}`,
+                                          background: isHighlighted ? C.accent : "#1a1a1a",
+                                          color: isHighlighted ? "#03251c" : C.text,
+                                          width: "100%",
+                                          textDecoration: "none"
+                                        }}
+                                      >
+                                        Select {plan.name.split(" ")[0]}
+                                      </Link>
                                     </div>
                                   );
                                 })}
