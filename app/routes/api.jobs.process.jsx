@@ -615,12 +615,11 @@ async function handleJobProcess(request) {
         throw new Error(errors.join(" | "));
       }
 
-      // Complete job
-      await prisma.syncJob.update({
-        where: { id: job.id },
-        data: { status: "completed" }
-      });
+      // Delete completed job — the full order JSON in `payload` contains customer PII
+      // (name, email, address). OrderSyncRecord already tracks what was synced.
+      await prisma.syncJob.delete({ where: { id: job.id } });
       results.push({ jobId: job.id, success: true });
+
 
     } catch (err) {
       console.error(`Sync Job ${job.id} failed:`, err);

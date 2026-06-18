@@ -8,10 +8,13 @@ export const action = async ({ request }) => {
   await Promise.all([
     prisma.orderSyncRecord.deleteMany({ where: { shopDomain: shop } }),
     prisma.platformConnection.deleteMany({ where: { shopDomain: shop } }),
+    // SyncJob stores full Shopify order JSON (customer name, email, address) — must be purged
+    prisma.syncJob.deleteMany({ where: { shopDomain: shop } }),
     prisma.subscription.deleteMany({ where: { shopDomain: shop } }),
     prisma.activityLog.deleteMany({ where: { shopDomain: shop } }),
     prisma.session.deleteMany({ where: { shop: shop } }),
   ]);
+
 
   console.log(`shop/redact for shop=${shop}: all data deleted`);
 

@@ -434,72 +434,35 @@ export async function disconnect(shop) {
   return prisma.platformConnection.deleteMany({ where: { shopDomain: shop } });
 }
 
-export function scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, orderNumber, attempt = 1) {
-  const delay = attempt === 1 ? 60 * 1000 : 5 * 60 * 1000;
-
-  setTimeout(async () => {
-    try {
-      console.log(`Retrying task completion for order ${shopifyOrderId} (attempt ${attempt})...`);
-
-      const connection = await getConnection(shop);
-      if (!connection?.accessToken) {
-        console.error(`Retry failed: Integration not connected for shop ${shop}`);
-        return;
-      }
-
-      const { ClickUpAdapter, MondayAdapter, NotionAdapter } = await import("./adapters/core.js");
-      let adapter;
-      const platform = connection.selectedPlatform || "clickup";
-      if (platform === "clickup") {
-        adapter = new ClickUpAdapter(connection.accessToken);
-      } else if (platform === "monday") {
-        adapter = new MondayAdapter(connection.accessToken);
-      } else if (platform === "notion") {
-        adapter = new NotionAdapter(connection.accessToken);
-      }
-
-      if (!adapter) {
-        throw new Error(`Unsupported selectedPlatform: ${platform}`);
-      }
-
-      await adapter.completeRecord(clickupTaskId);
-
-      await prisma.orderSyncRecord.updateMany({
-        where: { shopDomain: shop, shopifyOrderId },
-        data: { syncStatus: "fulfilled" }
-      });
-
-      logActivity(
-        shop,
-        "order_fulfilled",
-        `Order #${orderNumber} marked complete in ${platform === "clickup" ? "ClickUp" : platform === "monday" ? "Monday.com" : "Notion"} after retry`,
-        shopifyOrderId,
-        clickupTaskId
-      );
-    } catch (err) {
-      console.error(`Fulfillment retry attempt ${attempt} failed for order ${shopifyOrderId}:`, err);
-
-      if (attempt < 2) {
-        logActivity(
-          shop,
-          "sync_retried",
-          `Order #${orderNumber} fulfillment sync failed; retrying again in 5 minutes...`,
-          shopifyOrderId,
-          clickupTaskId
-        );
-        scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, orderNumber, attempt + 1);
-      } else {
-        logActivity(
-          shop,
-          "sync_failed",
-          `Order #${orderNumber} fulfillment sync failed after all retries: ${err.message}`,
-          shopifyOrderId,
-          clickupTaskId
-        );
-      }
-    }
-  }, delay);
+/**
+ * Schedules a fulfillment retry by marking the OrderSyncRecord status as "retrying".
+ *
+ * NOTE: The previous implementation used setTimeout(), which is silently killed when a
+ * Vercel serverless function finishes responding. This durable approach instead marks the
+ * record as "retrying" in the database. The next time Shopify fires an orders/updated
+ * webhook for this order (which happens multiple times during the fulfillment lifecycle),
+ * the handler will find the record in "retrying" state and attempt completion again.
+ */
+export async function scheduleFulfillmentRetry(shop, shopifyOrderId, clickupTaskId, orderNumber) {
+  try {
+    await prisma.orderSyncRecord.updateMany({
+      where: { shopDomain: shop, shopifyOrderId },
+      data: { syncStatus: "retrying" },
+    });
+    console.log(`Marked order ${shopifyOrderId} for retry on next Shopify webhook fire.`);
+  } catch (err) {
+    console.error(`Failed to mark order ${shopifyOrderId} as retrying:`, err);
+    // Fall back to logging the failure so the merchant can see it in the activity feed
+    logActivity(
+      shop,
+      "sync_failed",
+      `Order #${orderNumber} fulfillment sync failed and could not be scheduled for retry: ${err.message}`,
+      shopifyOrderId,
+      clickupTaskId
+    );
+  }
 }
+
 
 
 // ---------------------------------------------------------------------------

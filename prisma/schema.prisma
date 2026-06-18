@@ -77,7 +77,7 @@ model ActivityLog {
 model SyncJob {
   id             String   @id @default(uuid())
   shopDomain     String   @map("shop_domain")
-  shopifyOrderId String   @unique @map("shopify_order_id")
+  shopifyOrderId String   @map("shopify_order_id") // No @unique — one order can fan-out to multiple platform connections
   payload        String   // Serialized JSON of order details
   status         String   @default("pending") // pending, processing, completed, failed
   attempts       Int      @default(0)
@@ -86,6 +86,7 @@ model SyncJob {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@index([status])
+  @@index([shopDomain, shopifyOrderId]) // Fast duplicate-detection queries
   @@map("sync_jobs")
 }
 

@@ -277,7 +277,8 @@ export async function createShopifySubscription(admin, shop, planKey) {
           },
         ],
         returnUrl,
-        test: true, // test mode enabled
+        // Use real charges in production. Set SHOPIFY_BILLING_TEST=true in .env for local sandbox testing.
+        test: process.env.SHOPIFY_BILLING_TEST === "true",
         replacementBehavior: "APPLY_IMMEDIATELY",
       },
     }
