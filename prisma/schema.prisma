@@ -47,8 +47,10 @@ model Subscription {
   ordersSyncedAllTime    Int       @default(0) @map("orders_synced_all_time")
   // Merchant-configurable sync settings
   taskNameTemplate       String?   @map("task_name_template") // e.g. "Order {order_number} — {customer_name}"
+  taskDescriptionTemplate String?  @map("task_description_template")
   syncTrigger            String    @default("payment_confirmed") @map("sync_trigger") // payment_confirmed | on_create | on_fulfillment_start
   subtasksEnabled        Boolean   @default(false) @map("subtasks_enabled")
+  twoWaySyncEnabled      Boolean   @default(false) @map("two_way_sync_enabled")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
@@ -155,6 +157,8 @@ model SyncTarget {
   targetResourceId   String             @map("target_resource_id") // ClickUp List ID, Monday Board ID, or Notion Database ID
   targetResourceName String             @map("target_resource_name")
   keyword            String?            @map("keyword")
+  routingLocationId  String?            @map("routing_location_id")
+  routingTag         String?            @map("routing_tag")
   isActive           Boolean            @default(true) @map("is_active")
   createdAt          DateTime           @default(now()) @map("created_at")
   updatedAt          DateTime           @updatedAt @map("updated_at")

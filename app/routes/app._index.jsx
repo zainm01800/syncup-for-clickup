@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Form, useLoaderData, useActionData, useNavigation, Link } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, registerWebhooks } from "../shopify.server";
@@ -8,7 +8,7 @@ import { PLANS, getTranslatedFeatures } from "../plans";
 import prisma from "../db.server";
 
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
   try {
@@ -146,6 +146,106 @@ export const loader = async ({ request }) => {
     }
   }
 
+  // Fetch latest Shopify order for real-time preview
+  let latestOrder = null;
+  try {
+    const response = await admin.graphql(`#graphql
+      query GetLatestOrderForPreview {
+        orders(first: 1, reverse: true) {
+          nodes {
+            id
+            name
+            totalPriceSet {
+              presentmentMoney {
+                amount
+                currencyCode
+              }
+            }
+            financialStatus
+            createdAt
+            customer {
+              firstName
+              lastName
+              email
+              phone
+            }
+            lineItems(first: 10) {
+              nodes {
+                id
+                title
+                quantity
+                sku
+              }
+            }
+            shippingLines(first: 1) {
+              nodes {
+                title
+              }
+            }
+          }
+        }
+      }
+    `);
+
+    const responseJson = await response.json();
+    const orderNode = responseJson.data?.orders?.nodes?.[0];
+    if (orderNode) {
+      latestOrder = {
+        id: orderNode.id.split("/").pop(),
+        order_number: orderNode.name.replace(/^#/, ""),
+        number: orderNode.name,
+        total_price: orderNode.totalPriceSet?.presentmentMoney?.amount || "0.00",
+        currency: orderNode.totalPriceSet?.presentmentMoney?.currencyCode || "USD",
+        created_at: orderNode.createdAt,
+        financial_status: orderNode.financialStatus?.toLowerCase() || "",
+        customer: orderNode.customer ? {
+          first_name: orderNode.customer.firstName || "",
+          last_name: orderNode.customer.lastName || "",
+          email: orderNode.customer.email || "",
+          phone: orderNode.customer.phone || "",
+          name: [orderNode.customer.firstName, orderNode.customer.lastName].filter(Boolean).join(" ")
+        } : null,
+        line_items: orderNode.lineItems?.nodes?.map(li => ({
+          id: li.id.split("/").pop(),
+          title: li.title,
+          quantity: li.quantity,
+          sku: li.sku || ""
+        })) || [],
+        shipping_lines: orderNode.shippingLines?.nodes?.map(sl => ({
+          title: sl.title
+        })) || []
+      };
+    }
+  } catch (err) {
+    console.error("Failed to query latest Shopify order via GraphQL:", err);
+  }
+
+  if (!latestOrder) {
+    latestOrder = {
+      id: "999999999",
+      order_number: "1001",
+      number: "#1001",
+      total_price: "159.50",
+      currency: "USD",
+      created_at: new Date().toISOString(),
+      financial_status: "paid",
+      customer: {
+        first_name: "John",
+        last_name: "Doe",
+        email: "john.doe@example.com",
+        phone: "+15559876543",
+        name: "John Doe"
+      },
+      line_items: [
+        { id: "101", title: "Premium Leather Boot", quantity: 1, sku: "BOOT-PREM-L" },
+        { id: "102", title: "Organic Cotton Sock", quantity: 3, sku: "SOCK-ORG-C" }
+      ],
+      shipping_lines: [
+        { title: "Standard Expedited Courier" }
+      ]
+    };
+  }
+
   return {
     shop,
     email: session.email || null,
@@ -159,10 +259,13 @@ export const loader = async ({ request }) => {
     listError,
     clickupFields,
     fieldMappings,
+    latestOrder,
     // Merchant-configurable sync settings
     taskNameTemplate: subscription.taskNameTemplate || "",
+    taskDescriptionTemplate: subscription.taskDescriptionTemplate || "",
     syncTrigger: subscription.syncTrigger || "payment_confirmed",
     subtasksEnabled: subscription.subtasksEnabled || false,
+    twoWaySyncEnabled: subscription.twoWaySyncEnabled || false,
     subscription: {
       planName: subscription.planName,
       status: subscription.status,
@@ -461,8 +564,10 @@ export const action = async ({ request }) => {
   if (intent === "save_settings") {
     try {
       const rawTemplate = formData.get("taskNameTemplate") || "";
+      const rawDescTemplate = formData.get("taskDescriptionTemplate") || "";
       const syncTrigger = formData.get("syncTrigger") || "payment_confirmed";
       const subtasksEnabled = formData.get("subtasksEnabled") === "true";
+      const twoWaySyncEnabled = formData.get("twoWaySyncEnabled") === "true";
 
       const validTriggers = ["payment_confirmed", "on_create", "on_fulfillment_start"];
       if (!validTriggers.includes(syncTrigger)) {
@@ -479,8 +584,10 @@ export const action = async ({ request }) => {
         where: { shopDomain: shop },
         data: {
           taskNameTemplate: rawTemplate.trim() || null,
+          taskDescriptionTemplate: isGrowthOrPro ? (rawDescTemplate.trim() || null) : null,
           syncTrigger,
           subtasksEnabled: isGrowthOrPro ? subtasksEnabled : false,
+          twoWaySyncEnabled: isGrowthOrPro ? twoWaySyncEnabled : false,
         },
       });
 
@@ -521,6 +628,87 @@ function timeAgo(isoString) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function checkFieldCompatibility(shopifyType, destType, platform) {
+  if (!shopifyType || !destType) return { valid: true };
+
+  const sType = shopifyType.toLowerCase();
+  const dType = destType.toLowerCase();
+
+  // Text/string destinations can receive anything
+  const isTextDest =
+    dType.includes("text") ||
+    dType.includes("string") ||
+    dType === "title" ||
+    dType === "rich_text" ||
+    dType === "long_text" ||
+    dType === "short_text" ||
+    dType === "name" ||
+    dType === "url";
+
+  if (isTextDest) {
+    return { valid: true };
+  }
+
+  // Number/currency destinations
+  if (dType === "number" || dType === "numeric" || dType === "currency") {
+    if (sType === "currency") {
+      return { valid: true };
+    }
+    return {
+      valid: false,
+      message: `Mapping a ${sType} to a numeric field might cause format or sync errors.`,
+      tone: "warning"
+    };
+  }
+
+  // Date destinations
+  if (dType === "date" || dType === "created_time") {
+    if (sType === "date") {
+      return { valid: true };
+    }
+    return {
+      valid: false,
+      message: `Mapping a ${sType} to a date field will fail to parse correctly.`,
+      tone: "critical"
+    };
+  }
+
+  // Email destinations
+  if (dType === "email") {
+    if (sType === "email") {
+      return { valid: true };
+    }
+    return {
+      valid: false,
+      message: `A non-email field mapped to an email property might be rejected.`,
+      tone: "warning"
+    };
+  }
+
+  // Phone destinations
+  if (dType === "phone" || dType === "phone_number") {
+    if (sType === "phone") {
+      return { valid: true };
+    }
+    return {
+      valid: false,
+      message: `A non-phone field mapped to a phone property might be rejected.`,
+      tone: "warning"
+    };
+  }
+
+  // Dropdowns/checkboxes/selects/etc.
+  if (dType === "checkbox" || dType === "boolean") {
+    return {
+      valid: false,
+      message: `Target is a checkbox. We recommend mapping boolean/toggle values.`,
+      tone: "warning"
+    };
+  }
+
+  return { valid: true };
 }
 
 const EVENT_ICONS = {
@@ -574,9 +762,12 @@ export default function Index() {
     lists,
     clickupFields,
     fieldMappings,
+    latestOrder,
     taskNameTemplate,
+    taskDescriptionTemplate,
     syncTrigger,
     subtasksEnabled,
+    twoWaySyncEnabled,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -596,15 +787,103 @@ export default function Index() {
   const [conns, setConns] = useState(
     listConnections.length > 0
       ? listConnections
-      : [{ id: "", name: "", keyword: "" }]
+      : [{ id: "", name: "", keyword: "", routingLocationId: "", routingTag: "" }]
   );
 
   const [billingInterval, setBillingInterval] = useState("monthly"); // monthly or annual
   const [fieldMappingsList, setFieldMappingsList] = useState(fieldMappings || []);
   const [selectedTool, setSelectedTool] = useState(null);
   const [localTaskTemplate, setLocalTaskTemplate] = useState(taskNameTemplate || "");
+  const [localTaskDescriptionTemplate, setLocalTaskDescriptionTemplate] = useState(taskDescriptionTemplate || "");
   const [localSyncTrigger, setLocalSyncTrigger] = useState(syncTrigger || "payment_confirmed");
   const [localSubtasks, setLocalSubtasks] = useState(subtasksEnabled || false);
+  const [localTwoWaySync, setLocalTwoWaySync] = useState(twoWaySyncEnabled || false);
+
+  const compiledTemplatePreview = useMemo(() => {
+    const template = localTaskTemplate.trim() || "Order {order_number} — {customer_name}";
+    if (!latestOrder) return template;
+
+    const customerName = latestOrder.customer
+      ? [latestOrder.customer.first_name, latestOrder.customer.last_name].filter(Boolean).join(" ").trim() ||
+        latestOrder.customer.name ||
+        latestOrder.customer.email
+      : "Guest";
+
+    const shippingMethod = latestOrder.shipping_lines?.[0]?.title || "Standard Shipping";
+    const itemCount = latestOrder.line_items?.length || 0;
+    const orderTotal = `${latestOrder.currency || "USD"} ${latestOrder.total_price || "0.00"}`;
+    const paymentStatus = latestOrder.financial_status || "paid";
+    const orderNumber = String(latestOrder.order_number || latestOrder.number || latestOrder.id);
+
+    return template
+      .replace(/{order_number}/g, orderNumber)
+      .replace(/{customer_name}/g, customerName)
+      .replace(/{order_total}/g, orderTotal)
+      .replace(/{shipping_method}/g, shippingMethod)
+      .replace(/{item_count}/g, String(itemCount))
+      .replace(/{payment_status}/g, paymentStatus);
+  }, [localTaskTemplate, latestOrder]);
+
+  const compiledDescriptionPreview = useMemo(() => {
+    const template = localTaskDescriptionTemplate.trim();
+    if (!template) return "No custom description template configured. Default order details will be synced.";
+    if (!latestOrder) return template;
+
+    const customerName = latestOrder.customer
+      ? [latestOrder.customer.first_name, latestOrder.customer.last_name].filter(Boolean).join(" ").trim() ||
+        latestOrder.customer.name ||
+        latestOrder.customer.email
+      : "Guest";
+
+    const shippingMethod = latestOrder.shipping_lines?.[0]?.title || "Standard Shipping";
+    const itemCount = latestOrder.line_items?.length || 0;
+    const orderTotal = `${latestOrder.currency || "USD"} ${latestOrder.total_price || "0.00"}`;
+    const paymentStatus = latestOrder.financial_status || "paid";
+    const orderNumber = String(latestOrder.order_number || latestOrder.number || latestOrder.id);
+    const adminOrderUrl = `https://${shop}/admin/orders/${latestOrder.id}`;
+
+    let compiled = template;
+
+    // 1. Pre-process line item loops: {% for item in line_items %} ... {% endfor %}
+    const loopRegex = /\{%\s*for\s+(\w+)\s+in\s+line_items\s*%\}([\s\S]*?)\{%\s*endfor\s*%\}/g;
+    compiled = compiled.replace(loopRegex, (_, varName, loopContent) => {
+      const items = latestOrder.line_items || [];
+      return items.map((item) => {
+        const variant = item.variant_title ? ` (${item.variant_title})` : "";
+        
+        return loopContent
+          .replace(new RegExp(`{{\\s*${varName}\\.title\\s*}}`, "g"), item.title || "")
+          .replace(new RegExp(`{{\\s*${varName}\\.quantity\\s*}}`, "g"), String(item.quantity || 1))
+          .replace(new RegExp(`{{\\s*${varName}\\.sku\\s*}}`, "g"), item.sku || "")
+          .replace(new RegExp(`{{\\s*${varName}\\.variant\\s*}}`, "g"), variant)
+          .replace(new RegExp(`{{\\s*${varName}\\.price\\s*}}`, "g"), item.price || "0.00");
+      }).join("");
+    });
+
+    // 2. Resolve global order variables
+    const variables = {
+      "order.order_number": orderNumber,
+      "order.customer_name": customerName,
+      "order.email": latestOrder.customer?.email || latestOrder.email || "",
+      "order.phone": latestOrder.customer?.phone || latestOrder.billing_address?.phone || latestOrder.shipping_address?.phone || "",
+      "order.total": orderTotal,
+      "order.shipping_method": shippingMethod,
+      "order.item_count": String(itemCount),
+      "order.payment_status": paymentStatus,
+      "order.notes": latestOrder.note || "",
+      "order.admin_url": adminOrderUrl,
+      "order.shipping_address": latestOrder.shipping_address 
+        ? [latestOrder.shipping_address.address1, latestOrder.shipping_address.city, latestOrder.shipping_address.province, latestOrder.shipping_address.zip, latestOrder.shipping_address.country].filter(Boolean).join(", ")
+        : ""
+    };
+
+    for (const [key, val] of Object.entries(variables)) {
+      const reg = new RegExp(`{{\\s*${key}\\s*}}`, "g");
+      compiled = compiled.replace(reg, val);
+    }
+
+    return compiled;
+  }, [localTaskDescriptionTemplate, latestOrder, shop]);
 
   const isFullySetup = connected && listConnections.length > 0;
   const [wizardStep, setWizardStep] = useState(() => {
@@ -1577,22 +1856,56 @@ export default function Index() {
                                 </div>
 
                                 {listLimit > 1 && (
-                                  <div style={{ flex: 1, minWidth: "120px" }}>
-                                    <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword / Tag</label>
-                                    <input
-                                      id={`kw_${index}`}
-                                      type="text"
-                                      placeholder="e.g. Shoes or Vendor"
-                                      value={conn.keyword || ""}
-                                      onChange={(e) => {
-                                        const updated = [...conns];
-                                        updated[index] = { ...conn, keyword: e.currentTarget.value };
-                                        setConns(updated);
-                                      }}
-                                      style={styles.input}
-                                      className="border border-zinc-800"
-                                    />
-                                  </div>
+                                  <>
+                                    <div style={{ flex: 1, minWidth: "120px" }}>
+                                      <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword</label>
+                                      <input
+                                        id={`kw_${index}`}
+                                        type="text"
+                                        placeholder="e.g. Shoes or Vendor"
+                                        value={conn.keyword || ""}
+                                        onChange={(e) => {
+                                          const updated = [...conns];
+                                          updated[index] = { ...conn, keyword: e.currentTarget.value };
+                                          setConns(updated);
+                                        }}
+                                        style={styles.input}
+                                        className="border border-zinc-800"
+                                      />
+                                    </div>
+                                    <div style={{ flex: 1, minWidth: "120px" }}>
+                                      <label style={styles.formLabel} htmlFor={`loc_${index}`}>Location ID</label>
+                                      <input
+                                        id={`loc_${index}`}
+                                        type="text"
+                                        placeholder="Shopify Location ID"
+                                        value={conn.routingLocationId || ""}
+                                        onChange={(e) => {
+                                          const updated = [...conns];
+                                          updated[index] = { ...conn, routingLocationId: e.currentTarget.value };
+                                          setConns(updated);
+                                        }}
+                                        style={styles.input}
+                                        className="border border-zinc-800"
+                                      />
+                                    </div>
+                                    <div style={{ flex: 1, minWidth: "120px" }}>
+                                      <label style={styles.formLabel} htmlFor={`tag_${index}`}>Order Tag</label>
+                                      <input
+                                        id={`tag_${index}`}
+                                        type="text"
+                                        placeholder="Order/product tag name"
+                                        value={conn.routingTag || ""}
+                                        onChange={(e) => {
+                                          const updated = [...conns];
+                                          updated[index] = { ...conn, routingTag: e.currentTarget.value };
+                                          setConns(updated);
+                                        }}
+                                        style={styles.input}
+                                        className="border border-zinc-800"
+                                      />
+                                    </div>
+                                  </>
                                 )}
 
                                 {listLimit > 1 && conns.length > 1 && (
@@ -1611,7 +1924,7 @@ export default function Index() {
                           {conns.length < listLimit && (
                             <button
                               type="button"
-                              onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "" }])}
+                              onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "", routingLocationId: "", routingTag: "" }])}
                               style={styles.addConnButton}
                             >
                               + Add connection
@@ -1788,22 +2101,56 @@ export default function Index() {
                                   </div>
 
                                   {listLimit > 1 && (
-                                    <div style={{ flex: 1, minWidth: "120px" }}>
-                                      <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword / Tag</label>
-                                      <input
-                                        id={`kw_${index}`}
-                                        type="text"
-                                        placeholder="e.g. Shoes or Vendor"
-                                        value={conn.keyword || ""}
-                                        onChange={(e) => {
-                                          const updated = [...conns];
-                                          updated[index] = { ...conn, keyword: e.currentTarget.value };
-                                          setConns(updated);
-                                        }}
-                                        style={styles.input}
-                                        className="border border-zinc-800"
-                                      />
-                                    </div>
+                                    <>
+                                      <div style={{ flex: 1, minWidth: "120px" }}>
+                                        <label style={styles.formLabel} htmlFor={`kw_${index}`}>Product Keyword</label>
+                                        <input
+                                          id={`kw_${index}`}
+                                          type="text"
+                                          placeholder="e.g. Shoes or Vendor"
+                                          value={conn.keyword || ""}
+                                          onChange={(e) => {
+                                            const updated = [...conns];
+                                            updated[index] = { ...conn, keyword: e.currentTarget.value };
+                                            setConns(updated);
+                                          }}
+                                          style={styles.input}
+                                          className="border border-zinc-800"
+                                        />
+                                      </div>
+                                      <div style={{ flex: 1, minWidth: "120px" }}>
+                                        <label style={styles.formLabel} htmlFor={`loc_${index}`}>Location ID</label>
+                                        <input
+                                          id={`loc_${index}`}
+                                          type="text"
+                                          placeholder="Shopify Location ID"
+                                          value={conn.routingLocationId || ""}
+                                          onChange={(e) => {
+                                            const updated = [...conns];
+                                            updated[index] = { ...conn, routingLocationId: e.currentTarget.value };
+                                            setConns(updated);
+                                          }}
+                                          style={styles.input}
+                                          className="border border-zinc-800"
+                                        />
+                                      </div>
+                                      <div style={{ flex: 1, minWidth: "120px" }}>
+                                        <label style={styles.formLabel} htmlFor={`tag_${index}`}>Order Tag</label>
+                                        <input
+                                          id={`tag_${index}`}
+                                          type="text"
+                                          placeholder="Order/product tag name"
+                                          value={conn.routingTag || ""}
+                                          onChange={(e) => {
+                                            const updated = [...conns];
+                                            updated[index] = { ...conn, routingTag: e.currentTarget.value };
+                                            setConns(updated);
+                                          }}
+                                          style={styles.input}
+                                          className="border border-zinc-800"
+                                        />
+                                      </div>
+                                    </>
                                   )}
 
                                   {listLimit > 1 && conns.length > 1 && (
@@ -1822,7 +2169,7 @@ export default function Index() {
                             {conns.length < listLimit && (
                               <button
                                 type="button"
-                                onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "" }])}
+                                onClick={() => setConns([...conns, { id: lists[0]?.id || "", name: lists[0]?.name || "", keyword: "", routingLocationId: "", routingTag: "" }])}
                                 style={styles.addConnButton}
                               >
                                 + Add connection
@@ -1993,6 +2340,8 @@ export default function Index() {
                                   <div className="divide-y divide-zinc-900/50">
                                     {clickupFields.map((field) => {
                                       const currentMapping = fieldMappingsList.find((m) => m.clickupFieldId === field.id);
+                                      const shopifyField = SHOPIFY_SOURCE_FIELDS.find((sf) => sf.id === currentMapping?.shopifySourceField);
+                                      const validation = currentMapping ? checkFieldCompatibility(shopifyField?.type, field.type, selectedPlatform) : { valid: true };
                                       return (
                                         <div key={field.id} className="grid grid-cols-12 items-center p-4 hover:bg-zinc-900/10 transition-colors">
                                           {/* Shopify field selector */}
@@ -2024,6 +2373,20 @@ export default function Index() {
                                                 </option>
                                               ))}
                                             </select>
+                                            {!validation.valid && (
+                                              <div style={{
+                                                marginTop: 6,
+                                                fontSize: 10,
+                                                color: validation.tone === "critical" ? "#ff4444" : "#ff9900",
+                                                display: "flex",
+                                                gap: 4,
+                                                alignItems: "flex-start",
+                                                lineHeight: "1.3"
+                                              }}>
+                                                <span>⚠️</span>
+                                                <span>{validation.message}</span>
+                                              </div>
+                                            )}
                                           </div>
 
                                           {/* Arrow icon */}
@@ -2113,6 +2476,121 @@ export default function Index() {
                                 </button>
                               ))}
                             </div>
+                            
+                            {/* Live Preview Box */}
+                            <div style={{
+                              marginTop: 10,
+                              padding: "12px 14px",
+                              background: "rgba(255,255,255,0.03)",
+                              border: `1px dashed ${C.border}`,
+                              borderRadius: "10px",
+                            }}>
+                              <div style={{ fontSize: 10, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                                Live Preview (using latest store order)
+                              </div>
+                              <div style={{ fontSize: 13, color: C.accent, fontWeight: "bold", marginTop: 4, fontFamily: "monospace" }}>
+                                {compiledTemplatePreview}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Task Description Template */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="taskDescriptionTemplate">
+                                Task Description Template
+                              </label>
+                              {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
+                                <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
+                              )}
+                            </div>
+                            <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
+                              Customize the task body using Liquid-like syntax. Loops are supported for line items.
+                            </p>
+                            <textarea
+                              id="taskDescriptionTemplate"
+                              name="taskDescriptionTemplate"
+                              rows={5}
+                              value={localTaskDescriptionTemplate}
+                              onChange={(e) => setLocalTaskDescriptionTemplate(e.currentTarget.value)}
+                              placeholder={`Order Total: {{ order.total }}\nShipping: {{ order.shipping_method }}\n\nItems:\n{% for item in line_items %}\n- {{ item.quantity }}x {{ item.title }}{{ item.variant }} [SKU: {{ item.sku }}]\n{% endfor %}`}
+                              style={{
+                                ...styles.input,
+                                fontFamily: "monospace",
+                                fontSize: 12,
+                                resize: "vertical",
+                              }}
+                              disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                            />
+                            {/* Token chips */}
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                              {[
+                                "{{ order.order_number }}",
+                                "{{ order.customer_name }}",
+                                "{{ order.email }}",
+                                "{{ order.phone }}",
+                                "{{ order.total }}",
+                                "{{ order.shipping_method }}",
+                                "{{ order.item_count }}",
+                                "{{ order.payment_status }}",
+                                "{{ order.notes }}",
+                                "{{ order.admin_url }}",
+                                "{{ order.shipping_address }}",
+                                "line_items loop block"
+                              ].map((token) => (
+                                <button
+                                  key={token}
+                                  type="button"
+                                  disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                                  onClick={() => {
+                                    setLocalTaskDescriptionTemplate((prev) => {
+                                      const insertText = token === "line_items loop block"
+                                        ? "{% for item in line_items %}\n- {{ item.quantity }}x {{ item.title }}{{ item.variant }} [SKU: {{ item.sku }}]\n{% endfor %}"
+                                        : token;
+                                      return prev ? `${prev} ${insertText}` : insertText;
+                                    });
+                                  }}
+                                  style={{
+                                    fontSize: 11,
+                                    background: "rgba(0,196,140,0.08)",
+                                    border: "1px solid rgba(0,196,140,0.2)",
+                                    color: C.accent,
+                                    padding: "3px 8px",
+                                    borderRadius: 6,
+                                    cursor: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? "not-allowed" : "pointer",
+                                    fontWeight: 500,
+                                    outline: "none",
+                                    opacity: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? 0.5 : 1
+                                  }}
+                                >
+                                  {token}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* Description Live Preview Box */}
+                            <div style={{
+                              marginTop: 10,
+                              padding: "12px 14px",
+                              background: "rgba(255,255,255,0.03)",
+                              border: `1px dashed ${C.border}`,
+                              borderRadius: "10px",
+                            }}>
+                              <div style={{ fontSize: 10, color: C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                                Description Live Preview (using latest store order)
+                              </div>
+                              <pre style={{
+                                fontSize: 12,
+                                color: C.accent,
+                                marginTop: 6,
+                                fontFamily: "monospace",
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-all",
+                                margin: 0
+                              }}>
+                                {compiledDescriptionPreview}
+                              </pre>
+                            </div>
                           </div>
 
                           {/* Sync Trigger Selector */}
@@ -2186,6 +2664,54 @@ export default function Index() {
                                 position: "absolute",
                                 top: 2,
                                 left: localSubtasks ? 22 : 2,
+                                width: 20,
+                                height: 20,
+                                borderRadius: "50%",
+                                background: "#ffffff",
+                                transition: "left 0.2s ease",
+                                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                              }} />
+                            </button>
+                          </div>
+
+                          {/* Two-Way Status Sync Toggle */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
+                                Enable Two-Way Status Sync
+                                {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
+                                  <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
+                                Automatically fulfills the Shopify order when the mapped task is marked complete or done in ClickUp/Monday.
+                              </div>
+                            </div>
+                            <input type="hidden" name="twoWaySyncEnabled" value={String(localTwoWaySync)} />
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={localTwoWaySync}
+                              disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                              onClick={() => setLocalTwoWaySync((v) => !v)}
+                              style={{
+                                width: 44,
+                                height: 24,
+                                borderRadius: 12,
+                                background: localTwoWaySync ? "#00c48c" : "#2a2a2a",
+                                border: "none",
+                                cursor: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? "not-allowed" : "pointer",
+                                position: "relative",
+                                flexShrink: 0,
+                                transition: "background 0.2s ease",
+                                outline: "none",
+                                opacity: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? 0.5 : 1
+                              }}
+                            >
+                              <span style={{
+                                position: "absolute",
+                                top: 2,
+                                left: localTwoWaySync ? 22 : 2,
                                 width: 20,
                                 height: 20,
                                 borderRadius: "50%",

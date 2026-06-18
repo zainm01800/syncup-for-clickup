@@ -219,6 +219,8 @@ export async function getConnection(shop) {
     id: t.targetResourceId,
     name: t.targetResourceName,
     keyword: t.keyword || "",
+    routingLocationId: t.routingLocationId || null,
+    routingTag: t.routingTag || null,
   }));
 
   let metadata = null;
@@ -240,6 +242,53 @@ export async function getConnection(shop) {
     healthStatus: conn.healthStatus || "healthy",
     lastHealthCheck: conn.lastHealthCheck,
   };
+}
+
+export async function getAllConnections(shop) {
+  const conns = await prisma.platformConnection.findMany({
+    where: { shopDomain: shop, isActive: true },
+    include: {
+      clickUpMetadata: true,
+      mondayMetadata: true,
+      notionMetadata: true,
+      syncTargets: { where: { isActive: true } },
+    },
+  });
+
+  const results = [];
+  for (const conn of conns) {
+    const accessToken = await decryptToken(conn.encryptedAccessToken);
+    if (!accessToken) continue;
+
+    const listConnections = conn.syncTargets.map((t) => ({
+      id: t.targetResourceId,
+      name: t.targetResourceName,
+      keyword: t.keyword || "",
+      routingLocationId: t.routingLocationId || null,
+      routingTag: t.routingTag || null,
+    }));
+
+    let metadata = null;
+    if (conn.provider === "CLICKUP") metadata = conn.clickUpMetadata;
+    else if (conn.provider === "MONDAY") metadata = conn.mondayMetadata;
+    else if (conn.provider === "NOTION") metadata = conn.notionMetadata;
+
+    results.push({
+      id: conn.id,
+      shopDomain: conn.shopDomain,
+      accessToken,
+      selectedPlatform: conn.provider.toLowerCase(),
+      workspaceName: metadata?.workspaceName || (conn.provider === "CLICKUP" ? "ClickUp Workspace" : conn.provider === "MONDAY" ? "Monday.com Workspace" : "Notion Workspace"),
+      listId: listConnections[0]?.id || null,
+      listName: listConnections[0]?.name || null,
+      listConnections,
+      fieldMappings: metadata?.fieldMappings || "[]",
+      isFreePlan: metadata?.isFreePlan || false,
+      healthStatus: conn.healthStatus || "healthy",
+      lastHealthCheck: conn.lastHealthCheck,
+    });
+  }
+  return results;
 }
 
 export async function saveToken(shop, accessToken, workspaceName = null, isFreePlan = false) {
@@ -291,6 +340,8 @@ export async function saveListConnections(shop, listConnections) {
     throw new Error("No active connection found for this shop");
   }
 
+  const decryptedToken = await decryptToken(activeConn.encryptedAccessToken);
+
   const incomingIds = listConnections.map((c) => c.id).filter(Boolean);
   await prisma.syncTarget.updateMany({
     where: {
@@ -312,6 +363,8 @@ export async function saveListConnections(shop, listConnections) {
         update: {
           targetResourceName: target.name || "",
           keyword: target.keyword || null,
+          routingLocationId: target.routingLocationId || null,
+          routingTag: target.routingTag || null,
           isActive: true,
         },
         create: {
@@ -319,9 +372,29 @@ export async function saveListConnections(shop, listConnections) {
           targetResourceId: target.id,
           targetResourceName: target.name || "",
           keyword: target.keyword || null,
+          routingLocationId: target.routingLocationId || null,
+          routingTag: target.routingTag || null,
           isActive: true,
         },
       });
+    }
+  }
+
+  if (activeConn.provider === "CLICKUP") {
+    try {
+      await registerClickUpWebhook(shop, decryptedToken);
+    } catch (err) {
+      console.error("Failed to register ClickUp webhook on connection save:", err);
+    }
+  } else if (activeConn.provider === "MONDAY") {
+    for (const target of listConnections) {
+      if (target.id) {
+        try {
+          await registerMondayWebhook(target.id, decryptedToken);
+        } catch (err) {
+          console.error(`Failed to register Monday webhook on board ${target.id} on save:`, err);
+        }
+      }
     }
   }
 
@@ -601,5 +674,84 @@ export async function uploadTaskAttachment(token, taskId, fileUrl, filename) {
   }
 
   return res.json();
+}
+
+export async function registerClickUpWebhook(shop, token) {
+  try {
+    const teams = await getTeams(token);
+    if (!teams || teams.length === 0) return null;
+    const teamId = teams[0].id;
+    
+    const appUrl = process.env.SHOPIFY_APP_URL || "https://syncup-for-clickup.vercel.app";
+    const endpointUrl = `${appUrl}/api/webhooks/clickup`;
+    
+    // Check if webhook already exists for this team to avoid duplicates
+    let existingWebhooks = [];
+    try {
+      const resWebhooks = await clickupRequest(`/team/${teamId}/webhook`, token);
+      existingWebhooks = resWebhooks.webhooks || [];
+    } catch (err) {
+      console.warn("Failed to fetch existing ClickUp webhooks:", err.message);
+    }
+    
+    const alreadyExists = existingWebhooks.find(w => w.endpoint === endpointUrl);
+    if (alreadyExists) {
+      console.log("ClickUp webhook already registered:", alreadyExists.id);
+      return alreadyExists.id;
+    }
+    
+    const res = await clickupRequest(`/team/${teamId}/webhook`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        endpoint: endpointUrl,
+        events: ["taskStatusUpdated"]
+      })
+    });
+    
+    console.log("ClickUp webhook registered successfully:", res.id);
+    return res.id;
+  } catch (e) {
+    console.error("Failed to register ClickUp webhook:", e);
+    return null;
+  }
+}
+
+export async function registerMondayWebhook(boardId, token) {
+  try {
+    const appUrl = process.env.SHOPIFY_APP_URL || "https://syncup-for-clickup.vercel.app";
+    const endpointUrl = `${appUrl}/api/webhooks/monday`;
+    
+    const query = `
+      mutation create_webhook($boardId: ID!, $url: String!) {
+        create_webhook(board_id: $boardId, url: $url, event: change_column_value) {
+          id
+        }
+      }
+    `;
+    const variables = { boardId: String(boardId), url: endpointUrl };
+    
+    const response = await fetch("https://api.monday.com/v2", {
+      method: "POST",
+      headers: {
+        Authorization: token,
+        "Content-Type": "application/json",
+        "API-Version": "2024-04"
+      },
+      body: JSON.stringify({ query, variables })
+    });
+    
+    const data = await response.json();
+    if (data.errors) {
+      console.warn("Monday webhook registration returned errors:", data.errors);
+      return null;
+    }
+    
+    const webhookId = data.data?.create_webhook?.id;
+    console.log(`Monday webhook registered on board ${boardId}:`, webhookId);
+    return webhookId;
+  } catch (e) {
+    console.error(`Failed to register Monday webhook on board ${boardId}:`, e);
+    return null;
+  }
 }
 
