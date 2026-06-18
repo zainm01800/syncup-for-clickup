@@ -7,6 +7,15 @@ import { signState } from "../oauth-state.server";
 import { PLANS, getTranslatedFeatures } from "../plans";
 import prisma from "../db.server";
 
+// Global API Cache to speed up navigation on and off other routes (like Billing)
+if (!global.apiCache) {
+  global.apiCache = {
+    targets: new Map(),
+    fields: new Map(),
+  };
+}
+const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -84,9 +93,17 @@ export const loader = async ({ request }) => {
     }
 
     try {
-      const { IntegrationFactory } = await import("../adapters/factory");
-      const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
-      lists = await adapter.fetchTargets();
+      const cacheKey = `${shop}:${connection.selectedPlatform}:${connection.accessToken}`;
+      const now = Date.now();
+      const cachedTargets = global.apiCache.targets.get(cacheKey);
+      if (cachedTargets && (now - cachedTargets.timestamp < CACHE_TTL)) {
+        lists = cachedTargets.data;
+      } else {
+        const { IntegrationFactory } = await import("../adapters/factory");
+        const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
+        lists = await adapter.fetchTargets();
+        global.apiCache.targets.set(cacheKey, { data: lists, timestamp: now });
+      }
     } catch (error) {
       console.error(`Failed to load targets for ${shop}:`, error);
       listError = `We couldn't load your resources from ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}. Try disconnecting and reconnecting.`;
@@ -136,9 +153,17 @@ export const loader = async ({ request }) => {
         subscription.planName === "trial";
       if (isGrowthOrPro) {
         try {
-          const { IntegrationFactory } = await import("../adapters/factory");
-          const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
-          clickupFields = await adapter.fetchFields(connection.listId);
+          const cacheKey = `${shop}:${connection.selectedPlatform}:${connection.listId}:${connection.accessToken}`;
+          const now = Date.now();
+          const cachedFields = global.apiCache.fields.get(cacheKey);
+          if (cachedFields && (now - cachedFields.timestamp < CACHE_TTL)) {
+            clickupFields = cachedFields.data;
+          } else {
+            const { IntegrationFactory } = await import("../adapters/factory");
+            const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
+            clickupFields = await adapter.fetchFields(connection.listId);
+            global.apiCache.fields.set(cacheKey, { data: clickupFields, timestamp: now });
+          }
         } catch (e) {
           console.error("Failed to load destination fields in loader:", e);
         }
@@ -279,6 +304,7 @@ export const loader = async ({ request }) => {
     clickupError,
     removedLists,
     listLimit,
+    isFreePlan: connection?.isFreePlan || false,
     analytics: {
       totalSyncedMonth,
       totalSyncedAllTime,
@@ -776,6 +802,7 @@ export default function Index() {
     clickupError,
     removedLists,
     listLimit,
+    isFreePlan,
     analytics,
     recentActivity,
   } = useLoaderData();
@@ -2050,6 +2077,11 @@ export default function Index() {
                             </Form>
                           </div>
                         </div>
+                        {selectedPlatform === "clickup" && isFreePlan && (
+                          <div style={{ ...styles.warningBanner, marginTop: 12, fontSize: "13px", lineHeight: "1.4" }}>
+                            <strong>⚠️ ClickUp Free Tier Notice:</strong> Your ClickUp workspace is on the Free Forever plan. Custom field syncing is limited to 60 lifetime uses by ClickUp. We recommend leaving field mapping empty; SyncUp will automatically format order details in the task description to save your limits.
+                          </div>
+                        )}
                       </section>
 
                       {/* Configure order list connections */}
@@ -2317,9 +2349,9 @@ export default function Index() {
                                 ))}
                               </div>
 
-                              {selectedPlatform === "clickup" && fieldMappingsList.length > 0 && (
+                              {selectedPlatform === "clickup" && (isFreePlan || fieldMappingsList.length > 0) && (
                                 <div style={{ ...styles.warningBanner, marginBottom: 16, fontSize: "13px", lineHeight: "1.4" }}>
-                                  <strong>⚠️ ClickUp Free Tier Notice:</strong> ClickUp Free Forever plans have a lifetime limit of 60 custom field uses. If your workspace is on the Free tier, updates to mapped fields will stop syncing once this limit is reached.
+                                  <strong>⚠️ ClickUp Free Tier Notice:</strong> ClickUp Free Forever plans have a lifetime limit of 60 custom field uses. {isFreePlan ? "Your connected workspace is detected as Free tier, so custom field syncing will stop once this limit is reached. We recommend keeping field mappings empty; SyncUp will format all order details in the task description to save your limits." : "If your workspace is on the Free tier, updates to mapped fields will stop syncing once this limit is reached."}
                                 </div>
                               )}
 
