@@ -50,7 +50,7 @@ model Subscription {
   taskDescriptionTemplate String?  @map("task_description_template")
   syncTrigger            String    @default("payment_confirmed") @map("sync_trigger") // payment_confirmed | on_create | on_fulfillment_start
   subtasksEnabled        Boolean   @default(false) @map("subtasks_enabled")
-  twoWaySyncEnabled      Boolean   @default(false) @map("two_way_sync_enabled")
+  twoWaySyncEnabled      Boolean   @default(true) @map("two_way_sync_enabled")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 

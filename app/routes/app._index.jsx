@@ -129,6 +129,29 @@ export const loader = async ({ request }) => {
   });
   const successRate = totalTasks === 0 ? 100 : Math.round(((totalTasks - failedTasks) / totalTasks) * 100);
 
+  // 1. Count failed jobs
+  const failedJobsCount = await prisma.syncJob.count({
+    where: { shopDomain: shop, status: "failed" },
+  });
+
+  // 2. Fetch last sync time
+  const lastSyncRecord = await prisma.orderSyncRecord.findFirst({
+    where: { shopDomain: shop, syncStatus: { in: ["synced", "fulfilled"] } },
+    orderBy: { createdAt: "desc" },
+  });
+  const lastSyncTime = lastSyncRecord ? lastSyncRecord.createdAt.toISOString() : null;
+
+  // 3. Count orders synced today
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const syncedToday = await prisma.orderSyncRecord.count({
+    where: {
+      shopDomain: shop,
+      createdAt: { gte: startOfToday },
+      syncStatus: { in: ["synced", "fulfilled"] },
+    },
+  });
+
   const recentTasks = await prisma.orderSyncRecord.findMany({
     where: { shopDomain: shop },
     orderBy: { createdAt: "desc" },
@@ -311,6 +334,9 @@ export const loader = async ({ request }) => {
     removedLists,
     listLimit,
     isFreePlan: connection?.isFreePlan || false,
+    failedJobsCount,
+    lastSyncTime,
+    syncedToday,
     analytics: {
       totalSyncedMonth,
       totalSyncedAllTime,
@@ -318,7 +344,7 @@ export const loader = async ({ request }) => {
       recentTasks: recentTasks.map((t) => ({
         id: t.id,
         shopifyOrderId: t.shopifyOrderId,
-        orderNumber: t.orderNumber || `#${t.shopifyOrderId}`,
+        orderNumber: t.orderNumber || `#${t.shopifyOrderId.slice(-6)}`,
         status: t.syncStatus,
         createdAt: t.createdAt.toISOString(),
       })),
@@ -359,6 +385,40 @@ export const action = async ({ request }) => {
     await disconnect(shop);
     logActivity(shop, "clickup_disconnected", `${platformName} account disconnected`);
     return { ok: true, disconnected: true };
+  }
+
+  if (intent === "retry_all_failed_syncs") {
+    try {
+      const failedJobs = await prisma.syncJob.findMany({
+        where: { shopDomain: shop, status: "failed" },
+      });
+      if (failedJobs.length === 0) {
+        return { ok: true, retriedAllFailed: true, retriedCount: 0 };
+      }
+
+      const jobIds = failedJobs.map((j) => j.id);
+      const orderIds = failedJobs.map((j) => j.shopifyOrderId);
+
+      await prisma.syncJob.updateMany({
+        where: { id: { in: jobIds } },
+        data: { status: "pending", attempts: 0 },
+      });
+
+      await prisma.orderSyncRecord.updateMany({
+        where: { shopDomain: shop, shopifyOrderId: { in: orderIds } },
+        data: { syncStatus: "retrying" },
+      });
+
+      await prisma.activityLog.updateMany({
+        where: { shopDomain: shop, shopifyOrderId: { in: orderIds }, syncStatus: "failed" },
+        data: { syncStatus: "retrying" },
+      });
+
+      logActivity(shop, "sync_retried", `Retried ${failedJobs.length} failed sync job(s)`);
+      return { ok: true, retriedAllFailed: true, retriedCount: failedJobs.length };
+    } catch (e) {
+      return { ok: false, error: `Failed to retry syncs: ${e.message}` };
+    }
   }
 
   if (intent === "save_connections") {
@@ -884,6 +944,9 @@ export default function Index() {
     removedLists,
     listLimit,
     isFreePlan,
+    failedJobsCount,
+    lastSyncTime,
+    syncedToday,
     analytics,
     recentActivity,
   } = useLoaderData();
@@ -1078,10 +1141,19 @@ export default function Index() {
   };
 
   const renderProgressBar = () => {
+    const activeTool = selectedTool || selectedPlatform;
+    const destLabel = activeTool === "clickup"
+      ? "Pick ClickUp List"
+      : activeTool === "monday"
+      ? "Pick Monday Board"
+      : activeTool === "notion"
+      ? "Pick Notion Db"
+      : "Select Destination";
+
     const steps = [
       { key: "choose", label: "Choose Tool" },
       { key: "connect", label: "Connect Account" },
-      { key: "select", label: "Select Destination" },
+      { key: "select", label: destLabel },
       { key: "done", label: "Get Started" }
     ];
     const currentStepIndex = steps.findIndex(s => s.key === wizardStep);
@@ -1305,29 +1377,38 @@ export default function Index() {
             <div style={{ flex: 1 }}>
               <h1 style={styles.title}>SyncUp</h1>
               <p style={styles.subtitle}>
-                Automatically sync your Shopify orders to ClickUp, Monday, or Notion.
+                {wizardStep === "dashboard"
+                  ? "Automatically sync your Shopify orders to ClickUp, Monday, or Notion."
+                  : "Automatically sync your Shopify orders. Setup takes about 2 minutes."}
               </p>
             </div>
-            <div
-              style={{
-                ...styles.statusBadge,
-                color: statusCfg.color,
-                background: statusCfg.bg,
-                border: `1px solid ${statusCfg.color}44`,
-              }}
-            >
-              <span
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+              <div
                 style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background: statusCfg.color,
-                  display: "inline-block",
-                  marginRight: 6,
-                  flexShrink: 0,
+                  ...styles.statusBadge,
+                  color: statusCfg.color,
+                  background: statusCfg.bg,
+                  border: `1px solid ${statusCfg.color}44`,
                 }}
-              />
-              {statusCfg.label}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: statusCfg.color,
+                    display: "inline-block",
+                    marginRight: 6,
+                    flexShrink: 0,
+                  }}
+                />
+                {statusCfg.label}
+              </div>
+              {wizardStep === "dashboard" && lastSyncTime && (
+                <span style={{ fontSize: 11, color: C.muted }}>
+                  Last sync: {timeAgo(lastSyncTime)}
+                </span>
+              )}
             </div>
           </header>
 
@@ -1353,6 +1434,11 @@ export default function Index() {
           {actionData?.sentTestTask && (
             <div style={{ ...styles.successBanner, marginBottom: 16 }}>
               {`✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`}
+            </div>
+          )}
+          {actionData?.retriedAllFailed && (
+            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
+              {`✓ Successfully re-enqueued ${actionData.retriedCount} failed sync job(s) for processing.`}
             </div>
           )}
           {actionData?.savedSettings && (
@@ -2068,19 +2154,38 @@ export default function Index() {
                         justifyContent: "center",
                         marginBottom: 20,
                       }}>
-                        ✓
+                        🎉
                       </div>
-                      <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Configuration Complete!</h2>
+                      <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Setup complete!</h2>
                       <p style={{ ...styles.cardText, maxWidth: 480, margin: "0 auto 24px", fontSize: 14, lineHeight: "1.6" }}>
-                        SyncUp is now fully configured and monitoring your Shopify store. New orders will automatically sync as tasks in your connected workspace!
+                        SyncUp is now watching for new orders. Want to see it in action right now?
                       </p>
-                      <button
-                        type="button"
-                        onClick={() => setWizardStep("dashboard")}
-                        style={styles.primaryButton}
-                      >
-                        Go to Dashboard &rarr;
-                      </button>
+
+                      {actionData?.sentTestTask && (
+                        <div style={{ ...styles.successBanner, marginBottom: 24, textAlign: "left" }}>
+                          {`✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`}
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
+                        <Form method="post" style={{ display: "inline" }}>
+                          <input type="hidden" name="intent" value="send_test_task" />
+                          <button
+                            type="submit"
+                            style={styles.primaryButton}
+                            disabled={isSubmitting}
+                          >
+                            {isSubmitting ? "Sending..." : `Send a test task → see it in ${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday" : "Notion"} now`}
+                          </button>
+                        </Form>
+                        <button
+                          type="button"
+                          onClick={() => setWizardStep("dashboard")}
+                          style={{ ...styles.dangerButton, height: "fit-content", padding: "12px 22px" }}
+                        >
+                          Skip, go to Dashboard
+                        </button>
+                      </div>
                     </section>
                   )}
                 </div>
@@ -2117,6 +2222,52 @@ export default function Index() {
                       </Link>
                     </div>
                   </section>
+
+                  {/* Failed sync jobs banner/card */}
+                  {failedJobsCount > 0 && (
+                    <div style={{
+                      background: "rgba(255, 68, 68, 0.12)",
+                      border: "1px solid #ff4444",
+                      borderRadius: 16,
+                      padding: "16px 24px",
+                      marginBottom: 20,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 16,
+                      flexWrap: "wrap",
+                    }}>
+                      <div style={{ flex: 1, minWidth: "250px" }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#ff4444", display: "flex", alignItems: "center", gap: 6 }}>
+                          <span>⚠️</span>
+                          <span>{failedJobsCount} order sync{failedJobsCount > 1 ? "s" : ""} failed</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
+                          Some orders could not be synced to your connected workspace due to connection issues or mapping errors.
+                        </div>
+                      </div>
+                      <Form method="post" style={{ display: "inline" }}>
+                        <input type="hidden" name="intent" value="retry_all_failed_syncs" />
+                        <button
+                          type="submit"
+                          disabled={isSubmitting}
+                          style={{
+                            background: "#ff4444",
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: 8,
+                            padding: "10px 16px",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            transition: "all 0.2s",
+                          }}
+                        >
+                          {isSubmitting ? "Retrying..." : "Retry Now →"}
+                        </button>
+                      </Form>
+                    </div>
+                  )}
 
                   {/* TWO-COLUMN GRID */}
                   <div className="su-dashboard-grid">
@@ -2159,7 +2310,7 @@ export default function Index() {
                             outline: "none"
                           }}
                         >
-                          📋 Field Mapping
+                          📋 Map Shopify Fields
                         </button>
                         <button
                           type="button"
@@ -2786,19 +2937,19 @@ export default function Index() {
                             </div>
                           </div>
 
-                          {/* Sync Trigger Selector */}
+                           {/* When to create tasks Selector */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <label style={{ ...styles.formLabel, marginBottom: 0 }}>
-                              Sync Trigger <InfoTooltip text="Choose the exact event in Shopify that triggers task creation: when payment is confirmed (default), immediately when order is placed, or when fulfillment begins." />
+                              When to create tasks <InfoTooltip text="Choose the exact event in Shopify that triggers task creation: when payment is Captured/Paid, immediately when order is placed, or when fulfillment begins." />
                             </label>
                             <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
                               Choose when a task is created for new orders.
                             </p>
                             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
                               {[
-                                { id: "payment_confirmed", title: "Payment confirmed (Recommended)", desc: "Creates task only when payment is captured/paid (default)." },
-                                { id: "on_create", title: "Order placed", desc: "Creates task immediately for any order, including unpaid draft orders." },
-                                { id: "on_fulfillment_start", title: "Fulfillment begins", desc: "Creates task only when order fulfillment starts (partial or full)." }
+                                { id: "payment_confirmed", title: "When order is paid (Recommended)", desc: "Creates the task when the order is marked paid." },
+                                { id: "on_create", title: "Immediately when order is placed", desc: "Creates the task as soon as the customer checks out (including unpaid draft orders)." },
+                                { id: "on_fulfillment_start", title: "When order starts shipping", desc: "Creates the task when you start processing or shipping." }
                               ].map(({ id, title, desc }) => (
                                 <label key={id} style={{ display: "flex", gap: 12, alignItems: "flex-start", cursor: "pointer" }}>
                                   <input
@@ -2824,13 +2975,13 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Create one subtask per line item <InfoTooltip text="When enabled, each product variant in the Shopify order is created as a separate subtask under the main task." />
+                                Create a subtask per product <InfoTooltip text="When enabled, each product variant in the Shopify order is created as a separate subtask under the main task." />
                                 {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
                                 )}
                               </div>
                               <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
-                                Each line item in the Shopify order becomes a subtask. Lets packing teams check off individual items.
+                                Each product variant in the Shopify order becomes a separate subtask.
                               </div>
                             </div>
                             <input type="hidden" name="subtasksEnabled" value={String(localSubtasks)} />
@@ -2871,13 +3022,13 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Enable Two-Way Status Sync <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." />
+                                Mark task complete when order ships <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." />
                                 {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
                                 )}
                               </div>
                               <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
-                                Automatically fulfills the Shopify order when the mapped task is marked complete or done in ClickUp/Monday.
+                                Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday.
                               </div>
                             </div>
                             <input type="hidden" name="twoWaySyncEnabled" value={String(localTwoWaySync)} />
@@ -2997,8 +3148,8 @@ export default function Index() {
                                   <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
                                 </div>
                                 <div style={styles.analyticsStatCard}>
-                                  <div style={styles.analyticsStatLabel}>Success Rate</div>
-                                  <div style={styles.analyticsStatValue}>{analytics.successRate}%</div>
+                                  <div style={styles.analyticsStatLabel}>Synced today</div>
+                                  <div style={styles.analyticsStatValue}>{syncedToday}</div>
                                 </div>
                               </div>
 

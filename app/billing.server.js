@@ -33,6 +33,7 @@ export async function getOrCreateSubscription(shop) {
         trialEndDate: trialEnd,
         isTrialActive: true,
         status: "active",
+        twoWaySyncEnabled: true,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
