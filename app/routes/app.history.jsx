@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Form, useLoaderData, useNavigation, Link } from "react-router";
+import { Form, useLoaderData, useNavigation, Link, useSearchParams } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
@@ -131,6 +131,19 @@ export default function HistoryPage() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const [searchVal, setSearchVal] = useState(orderSearch || "");
+  const [searchParams] = useSearchParams();
+
+  // Helper to preserve shop and host during link filtering / pagination transitions
+  const getFilterUrl = (status, order, newPage) => {
+    const params = new URLSearchParams(searchParams);
+    if (status !== undefined) params.set("status", status);
+    if (order !== undefined) params.set("order", order);
+    if (newPage !== undefined) params.set("page", String(newPage));
+    return `/app/history?${params.toString()}`;
+  };
+
+  const shopVal = searchParams.get("shop") || "";
+  const hostVal = searchParams.get("host") || "";
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "system-ui,-apple-system,sans-serif" }}>
@@ -140,7 +153,7 @@ export default function HistoryPage() {
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
           <div>
-            <Link to="/app" style={{ color: C.accent, textDecoration: "none", fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4, marginBottom: 10 }}>
+            <Link to={`/app?shop=${encodeURIComponent(shopVal)}&host=${encodeURIComponent(hostVal)}`} style={{ color: C.accent, textDecoration: "none", fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4, marginBottom: 10 }}>
               {"<"} Back to dashboard
             </Link>
             <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>Activity & Sync History</h1>
@@ -158,15 +171,17 @@ export default function HistoryPage() {
         {/* Filters */}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
           {["all", "synced", "fulfilled", "failed", "retrying"].map((s) => (
-            <a key={s} href={"/app/history?status=" + s + "&order=" + searchVal + "&page=1"} style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, textDecoration: "none", border: statusFilter === s ? "1px solid " + C.accent : "1px solid " + C.border, color: statusFilter === s ? C.accent : C.muted, background: statusFilter === s ? "rgba(0,196,140,0.08)" : "transparent" }}>
+            <Link key={s} to={getFilterUrl(s, searchVal, 1)} style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, textDecoration: "none", border: statusFilter === s ? "1px solid " + C.accent : "1px solid " + C.border, color: statusFilter === s ? C.accent : C.muted, background: statusFilter === s ? "rgba(0,196,140,0.08)" : "transparent" }}>
               {s.charAt(0).toUpperCase() + s.slice(1)}
-            </a>
+            </Link>
           ))}
-          <form method="get" action="/app/history" style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+          <Form method="get" action="/app/history" style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            <input type="hidden" name="shop" value={shopVal} />
+            <input type="hidden" name="host" value={hostVal} />
             <input type="hidden" name="status" value={statusFilter} />
             <input name="order" type="text" placeholder="Search logs..." value={searchVal} onChange={(e) => setSearchVal(e.currentTarget.value)} style={{ background: C.surface, border: "1px solid " + C.border, color: C.text, padding: "7px 12px", borderRadius: 8, fontSize: 12, outline: "none", width: 170 }} />
             <button type="submit" style={{ background: C.accent, border: "none", color: "#03251c", padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Search</button>
-          </form>
+          </Form>
         </div>
 
         {/* Table */}
@@ -230,11 +245,11 @@ export default function HistoryPage() {
         {totalPages > 1 && (
           <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 20 }}>
             {page > 1 && (
-              <a href={"/app/history?status=" + statusFilter + "&order=" + orderSearch + "&page=" + (page - 1)} style={{ padding: "6px 14px", borderRadius: 8, background: C.surface, border: "1px solid " + C.border, color: C.muted, fontSize: 13, textDecoration: "none", fontWeight: 600 }}>Prev</a>
+              <Link to={getFilterUrl(statusFilter, orderSearch, page - 1)} style={{ padding: "6px 14px", borderRadius: 8, background: C.surface, border: "1px solid " + C.border, color: C.muted, fontSize: 13, textDecoration: "none", fontWeight: 600 }}>Prev</Link>
             )}
             <span style={{ padding: "6px 14px", fontSize: 13, color: C.muted }}>Page {page} of {totalPages}</span>
             {page < totalPages && (
-              <a href={"/app/history?status=" + statusFilter + "&order=" + orderSearch + "&page=" + (page + 1)} style={{ padding: "6px 14px", borderRadius: 8, background: C.surface, border: "1px solid " + C.border, color: C.muted, fontSize: 13, textDecoration: "none", fontWeight: 600 }}>Next</a>
+              <Link to={getFilterUrl(statusFilter, orderSearch, page + 1)} style={{ padding: "6px 14px", borderRadius: 8, background: C.surface, border: "1px solid " + C.border, color: C.muted, fontSize: 13, textDecoration: "none", fontWeight: 600 }}>Next</Link>
             )}
           </div>
         )}
