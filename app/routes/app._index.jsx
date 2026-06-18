@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Form, useLoaderData, useActionData, useNavigation, Link } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate, registerWebhooks } from "../shopify.server";
+import { authenticate } from "../shopify.server";
 import { getOrCreateSubscription, getTrialBannerStatus, isSubscriptionActive } from "../billing.server";
 import { signState } from "../oauth-state.server";
 import { PLANS, getTranslatedFeatures } from "../plans";
@@ -12,6 +12,7 @@ if (!globalThis.apiCache) {
   globalThis.apiCache = {
     targets: new Map(),
     fields: new Map(),
+    orders: new Map(),
   };
 }
 const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
@@ -19,12 +20,6 @@ const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-
-  try {
-    await registerWebhooks({ session });
-  } catch (e) {
-    console.error("registerWebhooks error:", e);
-  }
 
   const { getConnection, getRecentActivity } = await import("../clickup.server");
 
@@ -171,78 +166,87 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // Fetch latest Shopify order for real-time preview
+  // Fetch latest Shopify order for real-time preview (with cache)
   let latestOrder = null;
-  try {
-    const response = await admin.graphql(`#graphql
-      query GetLatestOrderForPreview {
-        orders(first: 1, reverse: true) {
-          nodes {
-            id
-            name
-            totalPriceSet {
-              presentmentMoney {
-                amount
-                currencyCode
+  const orderCacheKey = `${shop}`;
+  const cachedOrder = globalThis.apiCache.orders?.get(orderCacheKey);
+  const now = Date.now();
+
+  if (cachedOrder && (now - cachedOrder.timestamp < CACHE_TTL)) {
+    latestOrder = cachedOrder.data;
+  } else {
+    try {
+      const response = await admin.graphql(`#graphql
+        query GetLatestOrderForPreview {
+          orders(first: 1, reverse: true) {
+            nodes {
+              id
+              name
+              totalPriceSet {
+                presentmentMoney {
+                  amount
+                  currencyCode
+                }
               }
-            }
-            financialStatus
-            createdAt
-            customer {
-              firstName
-              lastName
-              email
-              phone
-            }
-            lineItems(first: 10) {
-              nodes {
-                id
-                title
-                quantity
-                sku
+              financialStatus
+              createdAt
+              customer {
+                firstName
+                lastName
+                email
+                phone
               }
-            }
-            shippingLines(first: 1) {
-              nodes {
-                title
+              lineItems(first: 10) {
+                nodes {
+                  id
+                  title
+                  quantity
+                  sku
+                }
+              }
+              shippingLines(first: 1) {
+                nodes {
+                  title
+                }
               }
             }
           }
         }
-      }
-    `);
+      `);
 
-    const responseJson = await response.json();
-    const orderNode = responseJson.data?.orders?.nodes?.[0];
-    if (orderNode) {
-      latestOrder = {
-        id: orderNode.id.split("/").pop(),
-        order_number: orderNode.name.replace(/^#/, ""),
-        number: orderNode.name,
-        total_price: orderNode.totalPriceSet?.presentmentMoney?.amount || "0.00",
-        currency: orderNode.totalPriceSet?.presentmentMoney?.currencyCode || "USD",
-        created_at: orderNode.createdAt,
-        financial_status: orderNode.financialStatus?.toLowerCase() || "",
-        customer: orderNode.customer ? {
-          first_name: orderNode.customer.firstName || "",
-          last_name: orderNode.customer.lastName || "",
-          email: orderNode.customer.email || "",
-          phone: orderNode.customer.phone || "",
-          name: [orderNode.customer.firstName, orderNode.customer.lastName].filter(Boolean).join(" ")
-        } : null,
-        line_items: orderNode.lineItems?.nodes?.map(li => ({
-          id: li.id.split("/").pop(),
-          title: li.title,
-          quantity: li.quantity,
-          sku: li.sku || ""
-        })) || [],
-        shipping_lines: orderNode.shippingLines?.nodes?.map(sl => ({
-          title: sl.title
-        })) || []
-      };
+      const responseJson = await response.json();
+      const orderNode = responseJson.data?.orders?.nodes?.[0];
+      if (orderNode) {
+        latestOrder = {
+          id: orderNode.id.split("/").pop(),
+          order_number: orderNode.name.replace(/^#/, ""),
+          number: orderNode.name,
+          total_price: orderNode.totalPriceSet?.presentmentMoney?.amount || "0.00",
+          currency: orderNode.totalPriceSet?.presentmentMoney?.currencyCode || "USD",
+          created_at: orderNode.createdAt,
+          financial_status: orderNode.financialStatus?.toLowerCase() || "",
+          customer: orderNode.customer ? {
+            first_name: orderNode.customer.firstName || "",
+            last_name: orderNode.customer.lastName || "",
+            email: orderNode.customer.email || "",
+            phone: orderNode.customer.phone || "",
+            name: [orderNode.customer.firstName, orderNode.customer.lastName].filter(Boolean).join(" ")
+          } : null,
+          line_items: orderNode.lineItems?.nodes?.map(li => ({
+            id: li.id.split("/").pop(),
+            title: li.title,
+            quantity: li.quantity,
+            sku: li.sku || ""
+          })) || [],
+          shipping_lines: orderNode.shippingLines?.nodes?.map(sl => ({
+            title: sl.title
+          })) || []
+        };
+        globalThis.apiCache.orders.set(orderCacheKey, { data: latestOrder, timestamp: now });
+      }
+    } catch (err) {
+      console.error("Failed to query latest Shopify order via GraphQL:", err);
     }
-  } catch (err) {
-    console.error("Failed to query latest Shopify order via GraphQL:", err);
   }
 
   if (!latestOrder) {
