@@ -221,6 +221,9 @@ export async function createShopifySubscription(admin, shop, planKey) {
       planName: {
         notIn: ["trial", "free", "expired", "cancelled"],
       },
+      shopDomain: {
+        not: "syncup-test-store.myshopify.com",
+      },
     },
   });
   const isPromoActive = activePaidCount < 10;
