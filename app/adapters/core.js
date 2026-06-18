@@ -83,6 +83,36 @@ async function clickupRequest(endpoint, token, options = {}) {
   return res.json();
 }
 
+function normalizeClickUpFieldType(type) {
+  if (typeof type === "number" || !isNaN(Number(type))) {
+    const typeNum = Number(type);
+    const mappings = {
+      0: "attachment",
+      1: "checkbox",
+      2: "currency",
+      3: "date",
+      4: "dropdown",
+      5: "email",
+      6: "emoji",
+      7: "formula",
+      8: "location",
+      9: "number",
+      10: "people",
+      11: "phone",
+      12: "progress",
+      13: "rating",
+      14: "relationship",
+      15: "rollup",
+      16: "short_text",
+      17: "tasks",
+      18: "text",
+      19: "url"
+    };
+    return mappings[typeNum] || "text";
+  }
+  return String(type || "").toLowerCase();
+}
+
 /**
  * ClickUp Integration Adapter
  */
@@ -102,15 +132,7 @@ export class ClickUpAdapter extends IntegrationAdapter {
     if (startDate) body.start_date = startDate;
     if (dueDate) body.due_date = dueDate;
 
-    // 1. Create main task
-    const task = await clickupRequest(`/list/${targetResourceId}/task`, this.apiToken, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-
-    const taskId = task.id;
-
-    // 2. Set custom fields if not free plan
+    // 2. Set custom fields if not free plan (batch set in initial creation body)
     if (!isFreePlan && fieldMappings) {
       let mappings = [];
       try {
@@ -121,23 +143,34 @@ export class ClickUpAdapter extends IntegrationAdapter {
 
       if (Array.isArray(mappings) && mappings.length > 0) {
         const orderValues = extractOrderSourceFields(rawOrder, customerName, shippingCost);
+        const customFieldsBody = [];
         for (const mapping of mappings) {
           const rawVal = orderValues[mapping.shopifySourceField];
           if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== "") {
             try {
               const formattedVal = this.formatFieldForClickUp(rawVal, mapping.clickupFieldType);
-              await clickupRequest(`/task/${taskId}/field/${mapping.clickupFieldId}`, this.apiToken, {
-                method: "POST",
-                body: JSON.stringify({ value: formattedVal }),
+              customFieldsBody.push({
+                id: mapping.clickupFieldId,
+                value: formattedVal,
               });
-              await sleep(800); // Throttling
             } catch (err) {
-              console.error(`Failed to map field ${mapping.clickupFieldId}:`, err);
+              console.error(`Failed to format field ${mapping.clickupFieldId}:`, err);
             }
           }
         }
+        if (customFieldsBody.length > 0) {
+          body.custom_fields = customFieldsBody;
+        }
       }
     }
+
+    // 1. Create main task (including custom fields in the POST body to avoid sequential writes)
+    const task = await clickupRequest(`/list/${targetResourceId}/task`, this.apiToken, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    const taskId = task.id;
 
     // 3. Process attachments
     if (attachments && attachments.length > 0) {
@@ -194,7 +227,8 @@ export class ClickUpAdapter extends IntegrationAdapter {
     const stringVal = String(value).trim();
     if (!stringVal) return null;
 
-    switch (type.toLowerCase()) {
+    const normalizedType = normalizeClickUpFieldType(type);
+    switch (normalizedType) {
       case "number":
       case "currency": {
         const parsed = parseFloat(stringVal.replace(/[^0-9.-]/g, ""));
@@ -311,6 +345,29 @@ export class MondayAdapter extends IntegrationAdapter {
     return data.data;
   }
 
+  formatFieldForMonday(value, type) {
+    if (value === null || value === undefined) return null;
+    const stringVal = String(value).trim();
+    if (!stringVal) return null;
+
+    const t = String(type || "").toLowerCase();
+    if (t === "status" || t === "color") {
+      return { label: stringVal };
+    } else if (t === "date") {
+      const dateObj = new Date(stringVal);
+      if (isNaN(dateObj.getTime())) return null;
+      return { date: dateObj.toISOString().split("T")[0] };
+    } else if (t === "numbers" || t === "numeric" || t === "number") {
+      const parsed = parseFloat(stringVal.replace(/[^0-9.-]/g, ""));
+      return isNaN(parsed) ? null : String(parsed);
+    } else if (t === "email") {
+      return { email: stringVal, text: stringVal };
+    } else if (t === "phone") {
+      return { phone: stringVal, countryShortName: "US" };
+    }
+    return stringVal;
+  }
+
   async createRecord(targetResourceId, { name, description, rawOrder, customerName, shippingCost, fieldMappings, subtasks, attachments }) {
     // 1. Build column values from mappings
     const columnValues = {};
@@ -327,7 +384,9 @@ export class MondayAdapter extends IntegrationAdapter {
       for (const mapping of mappings) {
         const rawVal = orderValues[mapping.shopifySourceField];
         if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== "") {
-          columnValues[mapping.mondayColumnId || mapping.clickupFieldId] = String(rawVal);
+          const colId = mapping.mondayColumnId || mapping.clickupFieldId;
+          const colType = mapping.mondayColumnType || mapping.clickupFieldType || "text";
+          columnValues[colId] = this.formatFieldForMonday(rawVal, colType);
         }
       }
     }

@@ -80,7 +80,9 @@ export const loader = async ({ request }) => {
     },
   });
 
-  return { subscription, selectedPlatform, activePaidCount };
+  const isTestModeActive = process.env.SHOPIFY_BILLING_TEST === "true";
+
+  return { subscription, selectedPlatform, activePaidCount, isTestModeActive };
 };
 
 export const action = async ({ request }) => {
@@ -129,7 +131,7 @@ const C = {
 };
 
 export default function BillingPage() {
-  const { subscription, selectedPlatform, activePaidCount = 0 } = useLoaderData();
+  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -309,7 +311,7 @@ export default function BillingPage() {
             lineHeight: 1.6,
             margin: 0,
           }}>
-            Select a plan to automate your order workflows. SyncUp uses Shopify secure billing, and all plan pricing is displayed in USD. Test mode is active.
+            Select a plan to automate your order workflows. SyncUp uses Shopify secure billing, and all plan pricing is displayed in USD. {isTestModeActive && "Test mode is active. "}You can cancel or change your plan at any time.
           </p>
         </header>
 

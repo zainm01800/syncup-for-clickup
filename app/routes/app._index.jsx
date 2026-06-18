@@ -417,7 +417,7 @@ export const action = async ({ request }) => {
       logActivity(shop, "sync_retried", `Retried ${failedJobs.length} failed sync job(s)`);
       return { ok: true, retriedAllFailed: true, retriedCount: failedJobs.length };
     } catch (e) {
-      return { ok: false, error: `Failed to retry syncs: ${e.message}` };
+      return { ok: false, error: "We couldn't retry the failed syncs. Please refresh the page and try again." };
     }
   }
 
@@ -448,7 +448,7 @@ export const action = async ({ request }) => {
       await saveListConnections(shop, conns);
       return { ok: true, saved: true };
     } catch (e) {
-      return { ok: false, error: `Failed to save: ${e.message}` };
+      return { ok: false, error: "We couldn't save your list connections. Verify your platform account has active permissions." };
     }
   }
 
@@ -464,7 +464,7 @@ export const action = async ({ request }) => {
       const adapter = await IntegrationFactory.getAdapter(platform, token);
       const connected = await adapter.testConnection();
       if (!connected) {
-        return { ok: false, error: "Failed to verify connection. Please check your token." };
+        return { ok: false, error: "Failed to verify connection. Please verify your API token and try again." };
       }
 
       const { encryptToken } = await import("../crypto.server");
@@ -526,7 +526,7 @@ export const action = async ({ request }) => {
       return { ok: true, connectedPlatform: platform };
     } catch (err) {
       console.error(`Failed to connect ${platform}:`, err);
-      return { ok: false, error: `Connection failed: ${err.message}` };
+      return { ok: false, error: "Failed to verify connection. Please verify your API token and try again." };
     }
   }
 
@@ -575,7 +575,7 @@ export const action = async ({ request }) => {
 
       return { ok: true, savedMappings: true };
     } catch (e) {
-      return { ok: false, error: `Failed to save mappings: ${e.message}` };
+      return { ok: false, error: "We couldn't save your field mappings. Please ensure the column selections are correct." };
     }
   }
 
@@ -615,7 +615,7 @@ export const action = async ({ request }) => {
 
  📝 Notes: ${mockNote}
 
- 🔗 View order: https://admin.shopify.com/store/syncup-test-store/orders/test`;
+ 🔗 View order: https://admin.shopify.com/store/${shop.replace(/\.myshopify\.com$/, "")}/orders/test`;
 
       const orderCreatedAt = Date.now();
       const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
@@ -649,7 +649,7 @@ export const action = async ({ request }) => {
       logActivity(shop, "order_synced", `Sent test record (Order #${mockOrderNumber}) to ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}`);
       return { ok: true, sentTestTask: true };
     } catch (e) {
-      return { ok: false, error: `Failed to send test task: ${e.message}` };
+      return { ok: false, error: "We couldn't create the test task. Your selected list/board may have been moved or deleted." };
     }
   }
 
@@ -685,7 +685,7 @@ export const action = async ({ request }) => {
 
       return { ok: true, savedSettings: true };
     } catch (e) {
-      return { ok: false, error: `Failed to save settings: ${e.message}` };
+      return { ok: false, error: "We couldn't save your settings. Please verify the templates and triggers." };
     }
   }
 
@@ -830,9 +830,9 @@ const EVENT_COLORS = {
 };
 
 const SYNC_STATUS_CONFIG = {
-  active: { label: "Sync Active", color: C.accent, bg: "rgba(0,196,140,0.12)", dot: C.accent },
-  paused: { label: "Sync Paused", color: "#ff9900", bg: "rgba(255,153,0,0.12)", dot: "#ff9900" },
-  not_configured: { label: "Not Configured", color: C.muted, bg: "rgba(154,154,154,0.1)", dot: C.muted },
+  active: { label: "Syncing Active", color: C.accent, bg: "rgba(0,196,140,0.12)", dot: C.accent },
+  paused: { label: "Syncing Paused", color: "#ff9900", bg: "rgba(255,153,0,0.12)", dot: "#ff9900" },
+  not_configured: { label: "Finish Setup", color: C.muted, bg: "rgba(154,154,154,0.1)", dot: C.muted },
 };
 
 const BANNER_COLORS = {
@@ -1509,42 +1509,30 @@ export default function Index() {
                   const plan = PLANS[planKey];
                   if (!plan) return null;
                   const isHighlighted = key === "growth";
-                  
-                  const overlayPlanSpecs = {
-                    standard: {
-                      badge: "Best for Starters",
-                      priceDesc: "$29.99/mo",
-                      annualPriceDesc: "$19.99/mo",
-                      billedDesc: "Billed annually as $239",
-                      regMonthly: "$49.99",
-                      regAnnual: "$399",
-                    },
-                    growth: {
-                      badge: "Most Popular",
-                      priceDesc: "$49.99/mo",
-                      annualPriceDesc: "$34.99/mo",
-                      billedDesc: "Billed annually as $419",
-                      regMonthly: "$79.99",
-                      regAnnual: "$699",
-                    },
-                    pro: {
-                      badge: "Concierge Setup Included",
-                      priceDesc: "$99.99/mo",
-                      annualPriceDesc: "$69.99/mo",
-                      billedDesc: "Billed annually as $839",
-                      regMonthly: "$149.99",
-                      regAnnual: "$1199",
-                    },
-                  };
-                  const spec = overlayPlanSpecs[key];
 
-                  const displayPrice = billingInterval === "annual" 
-                    ? spec.annualPriceDesc 
-                    : spec.priceDesc;
+                  // Single source of truth: all display values derive from plans.js (PLANS).
+                  // The merchant is charged plan.price; the headline here always matches it.
+                  // regMonthly/regAnnual are the strike-through "regular" price (plan.regularPrice).
+                  const overlayBadges = {
+                    standard: "Best for Starters",
+                    growth: "Most Popular",
+                    pro: "Concierge Setup Included",
+                  };
+
+                  const monthlyPlan = PLANS[`${key}_monthly`];
+                  const annualPlan = PLANS[`${key}_annual`];
+
+                  const displayPrice = billingInterval === "annual"
+                    ? `$${(annualPlan.price / 12).toFixed(2)}/mo`
+                    : `$${monthlyPlan.price.toFixed(2)}/mo`;
 
                   const regularPrice = billingInterval === "annual"
-                    ? spec.regAnnual
-                    : spec.regMonthly;
+                    ? (annualPlan.regularPrice ? `$${annualPlan.regularPrice.toFixed(2)}` : null)
+                    : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}` : null);
+
+                  const billedDesc = billingInterval === "annual"
+                    ? `Billed annually as $${annualPlan.price}`
+                    : null;
 
                   return (
                     <div
@@ -1557,7 +1545,7 @@ export default function Index() {
                     >
                       {isHighlighted && (
                         <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
-                          {spec.badge}
+                          {overlayBadges[key]}
                         </div>
                       )}
 
@@ -1586,10 +1574,10 @@ export default function Index() {
                           </div>
 
                           {/* Annual details */}
-                          {billingInterval === "annual" && (
+                          {billingInterval === "annual" && billedDesc && (
                             <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                              {spec.billedDesc} ({spec.priceDesc} equivalent)
+                              {billedDesc} (${(monthlyPlan.price).toFixed(2)}/mo equivalent)
                             </div>
                           )}
                         </div>
@@ -1782,41 +1770,26 @@ export default function Index() {
                                   if (!plan) return null;
                                   const isHighlighted = key === "growth";
                                   
-                                  const overlayPlanSpecs = {
-                                    standard: {
-                                      badge: "Best for Starters",
-                                      priceDesc: "$29.99/mo",
-                                      annualPriceDesc: "$19.99/mo",
-                                      billedDesc: "Billed annually as $239",
-                                      regMonthly: "$49.99",
-                                      regAnnual: "$399",
-                                    },
-                                    growth: {
-                                      badge: "Most Popular",
-                                      priceDesc: "$49.99/mo",
-                                      annualPriceDesc: "$34.99/mo",
-                                      billedDesc: "Billed annually as $419",
-                                      regMonthly: "$79.99",
-                                      regAnnual: "$699",
-                                    },
-                                    pro: {
-                                      badge: "Concierge Setup Included",
-                                      priceDesc: "$99.99/mo",
-                                      annualPriceDesc: "$69.99/mo",
-                                      billedDesc: "Billed annually as $839",
-                                      regMonthly: "$149.99",
-                                      regAnnual: "$1199",
-                                    },
+                                  const overlayBadges = {
+                                    standard: "Best for Starters",
+                                    growth: "Most Popular",
+                                    pro: "Concierge Setup Included",
                                   };
-                                  const spec = overlayPlanSpecs[key];
 
-                                  const displayPrice = billingInterval === "annual" 
-                                    ? spec.annualPriceDesc 
-                                    : spec.priceDesc;
+                                  const monthlyPlan = PLANS[`${key}_monthly`];
+                                  const annualPlan = PLANS[`${key}_annual`];
+
+                                  const displayPrice = billingInterval === "annual"
+                                    ? `$${(annualPlan.price / 12).toFixed(2)}/mo`
+                                    : `$${monthlyPlan.price.toFixed(2)}/mo`;
 
                                   const regularPrice = billingInterval === "annual"
-                                    ? spec.regAnnual
-                                    : spec.regMonthly;
+                                    ? (annualPlan.regularPrice ? `$${annualPlan.regularPrice.toFixed(2)}` : null)
+                                    : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}` : null);
+
+                                  const billedDesc = billingInterval === "annual"
+                                    ? `Billed annually as $${annualPlan.price}`
+                                    : null;
 
                                   return (
                                     <div
@@ -1830,7 +1803,7 @@ export default function Index() {
                                     >
                                       {isHighlighted && (
                                         <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
-                                          {spec.badge}
+                                          {overlayBadges[key]}
                                         </div>
                                       )}
 
@@ -1859,10 +1832,10 @@ export default function Index() {
                                           </div>
 
                                           {/* Annual details */}
-                                          {billingInterval === "annual" && (
+                                          {billingInterval === "annual" && billedDesc && (
                                             <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
                                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                                              {spec.billedDesc} ({spec.priceDesc} equivalent)
+                                              {billedDesc} (${(monthlyPlan.price).toFixed(2)}/mo equivalent)
                                             </div>
                                           )}
                                         </div>
@@ -2205,7 +2178,7 @@ export default function Index() {
                         </div>
                         {subscription.planName === "trial" ? (
                           <div style={styles.usageText}>
-                            Your 7-day trial ends on {subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : ""}
+                            Your 14-day trial ends on {subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : ""}
                           </div>
                         ) : (
                           <div style={styles.usageText}>
@@ -3037,7 +3010,15 @@ export default function Index() {
                               role="switch"
                               aria-checked={localTwoWaySync}
                               disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
-                              onClick={() => setLocalTwoWaySync((v) => !v)}
+                              onClick={() => {
+                                if (!localTwoWaySync) {
+                                  const confirm = window.confirm(
+                                    "⚠️ Warning: Enabling this option will automatically fulfill and close Shopify orders when their corresponding tasks are marked complete in your project management tool. Do you want to continue?"
+                                  );
+                                  if (!confirm) return;
+                                }
+                                setLocalTwoWaySync((v) => !v);
+                              }}
                               style={{
                                 width: 44,
                                 height: 24,
@@ -3106,7 +3087,7 @@ export default function Index() {
                         <p style={{ ...styles.cardText, margin: 0 }}>
                           {healthStatus === "healthy"
                             ? `✓ Your integration with ${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} is functioning normally.`
-                            : `⚠️ Integration token is inactive or rate-limited. Try disconnecting and reconnecting.`}
+                            : `⚠️ Your connection has dropped. Please disconnect and reconnect to resume order syncing.`}
                         </p>
                       </section>
 
@@ -3117,7 +3098,7 @@ export default function Index() {
                         const isAnalyticsUnlocked = isGrowthOrPro || isTrial;
 
                         return (
-                          <section style={{ ...styles.card, position: "relative", overflow: "hidden" }}>
+                          <section style={{ ...styles.card }}>
                             <h2 style={{ ...styles.cardTitle, marginTop: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                               Sync Analytics
                               {isTrial && (
@@ -3137,87 +3118,101 @@ export default function Index() {
                               )}
                             </h2>
 
-                            <div style={isAnalyticsUnlocked ? {} : { filter: "blur(4px)", pointerEvents: "none", opacity: 0.6 }}>
-                              <div style={styles.analyticsGrid}>
-                                <div style={styles.analyticsStatCard}>
-                                  <div style={styles.analyticsStatLabel}>Synced this month</div>
-                                  <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
-                                </div>
-                                <div style={styles.analyticsStatCard}>
-                                  <div style={styles.analyticsStatLabel}>Synced all time</div>
-                                  <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
-                                </div>
-                                <div style={styles.analyticsStatCard}>
-                                  <div style={styles.analyticsStatLabel}>Synced today</div>
-                                  <div style={styles.analyticsStatValue}>{syncedToday}</div>
-                                </div>
+                            {/* Stats Grid - Unlocked and always visible */}
+                            <div style={styles.analyticsGrid}>
+                              <div style={styles.analyticsStatCard}>
+                                <div style={styles.analyticsStatLabel}>Synced this month</div>
+                                <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
                               </div>
-
-                              <h3 style={styles.sectionSubheading}>Recent Sync Events</h3>
-                              {analytics.recentTasks.length === 0 ? (
-                                <p style={styles.cardText}>No sync events recorded yet.</p>
-                              ) : (
-                                <table style={styles.table}>
-                                  <thead>
-                                    <tr>
-                                      <th style={styles.th}>Time</th>
-                                      <th style={styles.th}>Order</th>
-                                      <th style={styles.th}>Status</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {analytics.recentTasks.map((t) => (
-                                      <tr key={t.id} style={styles.tr}>
-                                        <td style={styles.td}>{timeAgo(t.createdAt)}</td>
-                                        <td style={styles.td}>{t.orderNumber}</td>
-                                        <td style={styles.td}>
-                                          <span
-                                            style={{
-                                              ...styles.statusBadgeInline,
-                                              color: t.status === "failed" ? "#ff4444" : t.status === "retrying" ? "#ff9900" : "#00c48c",
-                                              background: t.status === "failed" ? "rgba(255,68,68,0.12)" : t.status === "retrying" ? "rgba(255,153,0,0.12)" : "rgba(0,196,140,0.12)",
-                                            }}
-                                          >
-                                            {t.status}
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              )}
+                              <div style={styles.analyticsStatCard}>
+                                <div style={styles.analyticsStatLabel}>Synced all time</div>
+                                <div style={styles.analyticsStatValue}>{analytics.totalSyncedAllTime}</div>
+                              </div>
+                              <div style={styles.analyticsStatCard}>
+                                <div style={styles.analyticsStatLabel}>Synced today</div>
+                                <div style={styles.analyticsStatValue}>{syncedToday}</div>
+                              </div>
                             </div>
 
-                            {!isAnalyticsUnlocked && (
-                              <div style={styles.analyticsLockOverlay}>
-                                <div style={styles.lockIcon}>🔒</div>
-                                <div style={styles.lockTitle}>Growth Plan Feature</div>
-                                <div style={styles.lockText}>
-                                  Upgrade to the Growth plan to unlock sync analytics, up to 5 connection routes, and automatic fulfillment updates.
-                                </div>
-                                <Link to={`/app/billing?platform=${selectedPlatform}`} style={styles.upgradeInlineButton}>
-                                  Upgrade to Growth
-                                </Link>
+                            {/* Recent Sync Events - Blurred & Locked section for free/standard tier */}
+                            <div style={{ position: "relative", marginTop: 24, minHeight: 180 }}>
+                              <div style={isAnalyticsUnlocked ? {} : { filter: "blur(4px)", pointerEvents: "none", opacity: 0.6 }}>
+                                <h3 style={styles.sectionSubheading}>Recent Sync Events</h3>
+                                {analytics.recentTasks.length === 0 ? (
+                                  <p style={styles.cardText}>No sync events recorded yet.</p>
+                                ) : (
+                                  <table style={styles.table}>
+                                    <thead>
+                                      <tr>
+                                        <th style={styles.th}>Time</th>
+                                        <th style={styles.th}>Order</th>
+                                        <th style={styles.th}>Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {analytics.recentTasks.map((t) => (
+                                        <tr key={t.id} style={styles.tr}>
+                                          <td style={styles.td}>{timeAgo(t.createdAt)}</td>
+                                          <td style={styles.td}>{t.orderNumber}</td>
+                                          <td style={styles.td}>
+                                            <span
+                                              style={{
+                                                ...styles.statusBadgeInline,
+                                                color: t.status === "failed" ? "#ff4444" : t.status === "retrying" ? "#ff9900" : "#00c48c",
+                                                background: t.status === "failed" ? "rgba(255,68,68,0.12)" : t.status === "retrying" ? "rgba(255,153,0,0.12)" : "rgba(0,196,140,0.12)",
+                                              }}
+                                            >
+                                              {t.status}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
                               </div>
-                            )}
+
+                              {!isAnalyticsUnlocked && (
+                                <div style={{
+                                  ...styles.analyticsLockOverlay,
+                                  borderRadius: 12,
+                                  background: "rgba(26, 26, 26, 0.9)",
+                                  backdropFilter: "blur(2px)",
+                                  padding: 16
+                                }}>
+                                  <div style={styles.lockIcon}>🔒</div>
+                                  <div style={styles.lockTitle}>Growth Plan Feature</div>
+                                  <div style={styles.lockText}>
+                                    Upgrade to the Growth plan to unlock sync history, up to 5 connection routes, and automatic fulfillment updates.
+                                  </div>
+                                  <Link to={`/app/billing?platform=${selectedPlatform}`} style={styles.upgradeInlineButton}>
+                                    Upgrade to Growth
+                                  </Link>
+                                </div>
+                              )}
+                            </div>
                           </section>
                         );
                       })()}
 
                       {/* Recent Activity Log */}
-                      {recentActivity.length > 0 && (
-                        <section style={styles.card}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                            <h2 style={{ ...styles.cardTitle, marginTop: 0, marginBottom: 0 }}>
-                              Recent log
-                            </h2>
-                            <Link
-                              to="/app/history"
-                              style={{ fontSize: 12, color: "#00c48c", textDecoration: "none", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}
-                            >
-                              View full history →
-                            </Link>
-                          </div>
+                      <section style={styles.card}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0, marginBottom: 0 }}>
+                            Recent log
+                          </h2>
+                          <Link
+                            to="/app/history"
+                            style={{ fontSize: 12, color: "#00c48c", textDecoration: "none", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}
+                          >
+                            View full history →
+                          </Link>
+                        </div>
+                        {recentActivity.length === 0 ? (
+                          <p style={{ ...styles.cardText, color: C.muted, margin: "12px 0 0 0" }}>
+                            No sync activity recorded yet. Place a test order to see logs here.
+                          </p>
+                        ) : (
                           <ul style={styles.activityList}>
                             {recentActivity.map((event) => (
                               <li key={event.id} style={styles.activityItem}>
@@ -3238,8 +3233,8 @@ export default function Index() {
                               </li>
                             ))}
                           </ul>
-                        </section>
-                      )}
+                        )}
+                      </section>
 
                     </div>
                   </div>

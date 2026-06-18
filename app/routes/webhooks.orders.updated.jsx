@@ -76,12 +76,13 @@ export const action = async ({ request }) => {
 
           const host = request.headers.get("host");
           const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
-          const triggerUrl = `${protocol}://${host}/api/jobs/process?secret=${process.env.SHOPIFY_API_SECRET}`;
+          const triggerUrl = `${protocol}://${host}/api/jobs/process`;
 
           fetch(triggerUrl, {
             method: "POST",
             headers: {
-              "Content-Type": "application/json"
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${process.env.SHOPIFY_API_SECRET}`
             }
           }).catch((err) => {
             console.error("Failed to trigger background jobs process:", err);

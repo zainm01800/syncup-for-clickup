@@ -25,6 +25,22 @@ async function handleReconciliation(request) {
     return Response.json({ ok: false, error: "Unauthorized access" }, { status: 401 });
   }
 
+  // 1.5 GDPR: Purge failed sync jobs older than 7 days to protect customer PII
+  try {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const purgeResult = await prisma.syncJob.deleteMany({
+      where: {
+        status: "failed",
+        updatedAt: { lt: sevenDaysAgo }
+      }
+    });
+    if (purgeResult.count > 0) {
+      console.log(`[GDPR Cleanup] Purged ${purgeResult.count} failed sync jobs older than 7 days containing PII.`);
+    }
+  } catch (purgeErr) {
+    console.error("Failed to run GDPR PII cleanup for failed jobs:", purgeErr);
+  }
+
   const shopParam = url.searchParams.get("shop");
   let shopsToProcess = [];
 
@@ -74,10 +90,16 @@ async function handleReconciliation(request) {
     // 3. Kick off the queue runner to execute any newly recovered sync jobs immediately
     const host = request.headers.get("host");
     const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
-    const triggerUrl = `${protocol}://${host}/api/jobs/process?secret=${process.env.SHOPIFY_API_SECRET}`;
+    const triggerUrl = `${protocol}://${host}/api/jobs/process`;
     
     // Await background fetch to ensure it completes before Vercel terminates the execution context
-    await fetch(triggerUrl, { method: "POST", headers: { "Content-Type": "application/json" } }).catch(console.error);
+    await fetch(triggerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.SHOPIFY_API_SECRET}`
+      }
+    }).catch(console.error);
 
     return Response.json({ ok: true, processed: summary.length, results: summary });
   } catch (globalErr) {

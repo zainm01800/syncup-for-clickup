@@ -24,7 +24,7 @@ export async function getOrCreateSubscription(shop) {
 
   if (!sub) {
     const trialStart = new Date();
-    const trialEnd = new Date(trialStart.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days under the hood for review safety
+    const trialEnd = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days trial duration
     sub = await prisma.subscription.create({
       data: {
         shopDomain: shop,
@@ -38,7 +38,7 @@ export async function getOrCreateSubscription(shop) {
         updatedAt: new Date(),
       },
     });
-    await logActivity(shop, "trial_started", "7-day free trial started");
+    await logActivity(shop, "trial_started", "14-day free trial started");
     return sub;
   }
 
@@ -174,16 +174,8 @@ export function getTrialBannerStatus(subscription) {
     };
   }
 
-  // Calculate virtual warning remaining hours based on a 7-day virtual trial
-  const virtualTrialEnd = new Date(trialStart.getTime() + 7 * 24 * 60 * 60 * 1000);
-  const msRemaining = virtualTrialEnd.getTime() - now.getTime();
+  const msRemaining = trialEnd.getTime() - now.getTime();
   const hoursRemaining = msRemaining / (1000 * 60 * 60);
-
-  if (hoursRemaining <= 0) {
-    // Virtual 7 days is over, but actual 30-day trial is still active.
-    // Return null so the merchant sees a clean active dashboard and can keep testing.
-    return null;
-  }
 
   if (hoursRemaining <= 24) {
     return {
