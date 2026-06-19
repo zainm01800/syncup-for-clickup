@@ -192,6 +192,7 @@ export default function BillingPage() {
   const [billingInterval, setBillingInterval] = useState(
     subscription.planName.endsWith("_annual") ? "annual" : "monthly"
   );
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
   useEffect(() => {
     if (actionData?.confirmationUrl) {
@@ -881,29 +882,85 @@ export default function BillingPage() {
                           Current Plan
                         </div>
                         {currentPlanKey !== "free" && currentPlanKey !== "trial" && (
-                          <Form method="post" style={{ margin: 0, padding: 0 }}>
-                            <input type="hidden" name="intent" value="cancel" />
+                          showCancelConfirm ? (
+                            <div style={{
+                              marginTop: 8,
+                              padding: 12,
+                              borderRadius: 10,
+                              backgroundColor: "rgba(255, 68, 68, 0.05)",
+                              border: "1px solid rgba(255, 68, 68, 0.2)",
+                              fontSize: 11,
+                              lineHeight: 1.4,
+                              boxSizing: "border-box",
+                              textAlign: "left",
+                            }}>
+                              <div style={{ color: "#ff4444", fontWeight: "bold", marginBottom: 6 }}>
+                                Stop future charges?
+                              </div>
+                              <p style={{ color: C.muted, margin: "0 0 12px 0", fontSize: 11 }}>
+                                You will not be charged again. {plan.name.split(" ")[0]} features will remain active until the end of your billing cycle on{" "}
+                                <strong>
+                                  {(() => {
+                                    const pDays = subscription.annualBilling ? 365 : 30;
+                                    const cStart = subscription.billingCycleStart || subscription.createdAt;
+                                    return new Date(new Date(cStart).getTime() + pDays * 24 * 60 * 60 * 1000).toLocaleDateString();
+                                  })()}
+                                </strong>.
+                              </p>
+                              <div style={{ display: "flex", gap: 8 }}>
+                                <Form method="post" style={{ margin: 0, padding: 0, flex: 1 }}>
+                                  <input type="hidden" name="intent" value="cancel" />
+                                  <button
+                                    type="submit"
+                                    disabled={isSubmitting}
+                                    style={{
+                                      width: "100%",
+                                      padding: "8px 0",
+                                      borderRadius: 8,
+                                      fontSize: 10,
+                                      fontWeight: "bold",
+                                      backgroundColor: "#ff4444",
+                                      color: "#ffffff",
+                                      border: "none",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    {isSubmitting ? "Cancelling..." : "Yes, Cancel"}
+                                  </button>
+                                </Form>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowCancelConfirm(false)}
+                                  style={{
+                                    flex: 1,
+                                    padding: "8px 0",
+                                    borderRadius: 8,
+                                    fontSize: 10,
+                                    fontWeight: "bold",
+                                    backgroundColor: C.surface,
+                                    color: C.text,
+                                    border: `1px solid ${C.border}`,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Keep Plan
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
                             <button
-                              type="submit"
+                              type="button"
+                              onClick={() => setShowCancelConfirm(true)}
                               style={{
                                 ...getButtonStyle(false),
                                 borderColor: "rgba(255, 68, 68, 0.2)",
                                 color: "#ff4444",
                                 backgroundColor: "rgba(255, 68, 68, 0.02)",
                               }}
-                              disabled={isSubmitting}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.backgroundColor = "rgba(255, 68, 68, 0.08)";
-                                e.currentTarget.style.borderColor = "rgba(255, 68, 68, 0.4)";
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.backgroundColor = "rgba(255, 68, 68, 0.02)";
-                                e.currentTarget.style.borderColor = "rgba(255, 68, 68, 0.2)";
-                              }}
                             >
-                              {isSubmitting ? "Cancelling..." : "Cancel Subscription"}
+                              Cancel Subscription
                             </button>
-                          </Form>
+                          )
                         )}
                       </div>
                     )
