@@ -847,21 +847,42 @@ export default function BillingPage() {
                     </div>
                   ) : isCurrent ? (
                     subscription.shopifyChargeStatus === "cancelled" ? (
-                      <div style={{
-                        width: "100%",
-                        textAlign: "center",
-                        padding: "12px 0",
-                        borderRadius: 12,
-                        fontSize: 12,
-                        fontWeight: "bold",
-                        border: `1px solid rgba(255, 165, 0, 0.3)`,
-                        color: "orange",
-                        backgroundColor: "rgba(255, 165, 0, 0.05)",
-                        cursor: "default",
-                        boxSizing: "border-box",
-                        display: "block",
-                      }}>
-                        Expires {expiryDate ? new Date(expiryDate).toLocaleDateString() : ""}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{
+                          width: "100%",
+                          textAlign: "center",
+                          padding: "12px 0",
+                          borderRadius: 12,
+                          fontSize: 12,
+                          fontWeight: "bold",
+                          border: `1px solid rgba(255, 165, 0, 0.3)`,
+                          color: "orange",
+                          backgroundColor: "rgba(255, 165, 0, 0.05)",
+                          cursor: "default",
+                          boxSizing: "border-box",
+                          display: "block",
+                        }}>
+                          Expires {expiryDate ? new Date(expiryDate).toLocaleDateString() : ""}
+                        </div>
+                        <Form method="post" style={{ margin: 0, padding: 0 }}>
+                          <input type="hidden" name="intent" value="upgrade" />
+                          <input type="hidden" name="plan" value={planKey} />
+                          <button
+                            type="submit"
+                            style={getButtonStyle(true)}
+                            disabled={isSubmitting}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = "#34d399";
+                              e.currentTarget.style.transform = "scale(1.02)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = C.accent;
+                              e.currentTarget.style.transform = "scale(1)";
+                            }}
+                          >
+                            {isSubmitting ? "Reconnecting..." : "Re-subscribe"}
+                          </button>
+                        </Form>
                       </div>
                     ) : (
                       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

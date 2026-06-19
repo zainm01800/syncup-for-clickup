@@ -386,6 +386,8 @@ export async function activateSubscription(shop, planKey, chargeId) {
       status: "active",
       billingCycleStart: now,
       annualBilling: plan.annual,
+      pendingPlanName: null,
+      pendingShopifyChargeId: null,
     },
     create: {
       shopDomain: shop,
@@ -398,6 +400,8 @@ export async function activateSubscription(shop, planKey, chargeId) {
       annualBilling: plan.annual,
       trialStartDate: now,
       trialEndDate: now,
+      pendingPlanName: null,
+      pendingShopifyChargeId: null,
     },
   });
 }
