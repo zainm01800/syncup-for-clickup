@@ -18,30 +18,66 @@ export const loader = async ({ request }) => {
 
   const url = new URL(request.url);
   const activated = url.searchParams.get("activated");
+  const chargeId = url.searchParams.get("charge_id");
+  const replacementBehavior = url.searchParams.get("replacement_behavior");
 
   const subscription = await getOrCreateSubscription(shop);
 
   // Callback after Shopify billing approval
   if (activated && PLANS[activated]) {
-    const res = await admin.graphql(`#graphql
-      {
-        currentAppInstallation {
-          activeSubscriptions {
-            id
-            name
-            status
+    let match = null;
+
+    if (chargeId) {
+      const fullId = chargeId.startsWith("gid://") 
+        ? chargeId 
+        : `gid://shopify/AppSubscription/${chargeId}`;
+      try {
+        const res = await admin.graphql(`#graphql
+          query GetSub($id: ID!) {
+            node(id: $id) {
+              ... on AppSubscription {
+                id
+                name
+                status
+              }
+            }
+          }
+        `, {
+          variables: { id: fullId }
+        });
+        const { data } = await res.json();
+        const node = data?.node;
+        if (node && (node.status === "ACTIVE" || node.status === "PENDING" || node.status === "ACCEPTED")) {
+          match = node;
+        }
+      } catch (err) {
+        console.error("Failed to query subscription by charge ID:", err);
+      }
+    }
+
+    // Fallback if chargeId query did not find it (e.g. status isn't matched or API error)
+    if (!match) {
+      const res = await admin.graphql(`#graphql
+        {
+          currentAppInstallation {
+            activeSubscriptions {
+              id
+              name
+              status
+            }
           }
         }
-      }
-    `);
-    const { data } = await res.json();
-    const activeSubs = data?.currentAppInstallation?.activeSubscriptions || [];
-    const plan = PLANS[activated];
-    const match = activeSubs.find(
-      (s) => s.name === plan.shopifyPlanName && s.status === "ACTIVE"
-    );
+      `);
+      const { data } = await res.json();
+      const activeSubs = data?.currentAppInstallation?.activeSubscriptions || [];
+      const plan = PLANS[activated];
+      match = activeSubs.find(
+        (s) => s.name === plan.shopifyPlanName && s.status === "ACTIVE"
+      );
+    }
 
     if (match) {
+      const plan = PLANS[activated];
       // Check if they are in the grace period of a cancelled paid plan
       const durationDays = subscription.annualBilling ? 365 : 30;
       const cycleStart = subscription.billingCycleStart || subscription.createdAt;
@@ -51,7 +87,7 @@ export const loader = async ({ request }) => {
                             subscription.planName !== "trial" && 
                             new Date() <= expirationDate;
 
-      if (inGracePeriod) {
+      if (inGracePeriod || replacementBehavior === "APPLY_ON_NEXT_BILLING_CYCLE") {
         await prisma.subscription.update({
           where: { shopDomain: shop },
           data: {
@@ -111,10 +147,19 @@ export const loader = async ({ request }) => {
     expiryDate = expirationDate.toISOString();
   }
 
+  // Expose scheduled start date
+  let scheduledStartDate = null;
+  if (subscription.pendingPlanName) {
+    const durationDays = subscription.annualBilling ? 365 : 30;
+    const cycleStart = subscription.billingCycleStart || subscription.createdAt;
+    const nextBillingDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+    scheduledStartDate = nextBillingDate.toISOString();
+  }
+
   const scheduled = url.searchParams.get("scheduled") === "1";
   const scheduledPlan = url.searchParams.get("scheduled_plan") || null;
 
-  return { subscription, selectedPlatform, activePaidCount, isTestModeActive, expiryDate, scheduled, scheduledPlan };
+  return { subscription, selectedPlatform, activePaidCount, isTestModeActive, expiryDate, scheduled, scheduledPlan, scheduledStartDate };
 };
 
 export const action = async ({ request }) => {
@@ -146,6 +191,8 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "upgrade" && planKey) {
+    const replacementBehavior = formData.get("replacement_behavior") || "APPLY_IMMEDIATELY";
+
     if (planKey === "free") {
       const subscription = await getOrCreateSubscription(shop);
       if (subscription.shopifyChargeId) {
@@ -154,15 +201,14 @@ export const action = async ({ request }) => {
       await downgradeToFree(shop);
       return redirect("/app?billing_success=1");
     } else if (PLANS[planKey]) {
-      const subscription = await getOrCreateSubscription(shop);
-      if (subscription.shopifyChargeId) {
-        await cancelExistingSubscription(admin, subscription.shopifyChargeId);
-      }
+      // DO NOT cancel the old subscription for paid plan upgrades/downgrades.
+      // Shopify handles this automatically, supporting proration and scheduling.
       try {
         const { confirmationUrl } = await createShopifySubscription(
           admin,
           shop,
-          planKey
+          planKey,
+          replacementBehavior
         );
         return { confirmationUrl };
       } catch (err) {
@@ -184,7 +230,7 @@ const C = {
 };
 
 export default function BillingPage() {
-  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive, expiryDate, scheduled, scheduledPlan } = useLoaderData();
+  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive, expiryDate, scheduled, scheduledPlan, scheduledStartDate } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -194,12 +240,17 @@ export default function BillingPage() {
   );
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [activeConfirmPlanKey, setActiveConfirmPlanKey] = useState(null);
+  const [upgradeTiming, setUpgradeTiming] = useState("APPLY_IMMEDIATELY");
 
   useEffect(() => {
     if (actionData?.confirmationUrl) {
       window.top.location.href = actionData.confirmationUrl;
     }
   }, [actionData?.confirmationUrl]);
+
+  useEffect(() => {
+    setUpgradeTiming("APPLY_IMMEDIATELY");
+  }, [activeConfirmPlanKey]);
 
   const currentPlanKey = subscription?.planName || "trial";
 
@@ -812,7 +863,7 @@ export default function BillingPage() {
                       boxSizing: "border-box",
                       display: "block",
                     }}>
-                      Scheduled (Starts {expiryDate ? new Date(expiryDate).toLocaleDateString() : ""})
+                      Scheduled (Starts {scheduledStartDate ? new Date(scheduledStartDate).toLocaleDateString() : (expiryDate ? new Date(expiryDate).toLocaleDateString() : "")})
                     </div>
                   ) : isDowngradeOption && subscription.shopifyChargeStatus !== "cancelled" ? (
                     <div style={{
@@ -1062,69 +1113,145 @@ export default function BillingPage() {
             border: `1px solid ${C.border}`,
             borderRadius: 16,
             padding: 24,
-            maxWidth: 460,
+            maxWidth: 480,
             width: "90%",
             boxSizing: "border-box",
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.3)",
           }}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 12px 0", color: C.text }}>
-              Confirm Plan Change
-            </h3>
-            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 24px 0" }}>
-              {(() => {
-                const targetPlan = PLANS[activeConfirmPlanKey];
-                const currentPlan = PLANS[currentPlanKey];
-                
-                const durationDays = subscription.annualBilling ? 365 : 30;
-                const cycleStart = subscription.billingCycleStart || subscription.createdAt;
-                const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
-                const expiryString = expirationDate.toLocaleDateString();
+            {(() => {
+              const targetPlan = PLANS[activeConfirmPlanKey];
+              const currentPlan = PLANS[currentPlanKey];
+              
+              const durationDays = subscription.annualBilling ? 365 : 30;
+              const cycleStart = subscription.billingCycleStart || subscription.createdAt;
+              const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+              const expiryString = expirationDate.toLocaleDateString();
 
-                if (subscription.shopifyChargeStatus === "cancelled") {
-                  return `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts.`;
-                } else {
-                  return `You are switching to the ${targetPlan?.name || activeConfirmPlanKey}. This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`;
-                }
-              })()}
-            </p>
-            <div style={{ display: "flex", gap: 12, justifyContent: "end" }}>
-              <button
-                type="button"
-                onClick={() => setActiveConfirmPlanKey(null)}
-                style={{
-                  padding: "10px 18px",
-                  borderRadius: 10,
-                  fontSize: 12,
-                  fontWeight: "bold",
-                  backgroundColor: "transparent",
-                  color: C.text,
-                  border: `1px solid ${C.border}`,
-                  cursor: "pointer",
-                }}
-              >
-                Cancel
-              </button>
-              <Form method="post" style={{ margin: 0, padding: 0 }}>
-                <input type="hidden" name="intent" value="upgrade" />
-                <input type="hidden" name="plan" value={activeConfirmPlanKey} />
-                <button
-                  type="submit"
-                  onClick={() => setActiveConfirmPlanKey(null)}
-                  style={{
-                    padding: "10px 18px",
-                    borderRadius: 10,
-                    fontSize: 12,
-                    fontWeight: "bold",
-                    backgroundColor: C.accent,
-                    color: "#03251c",
-                    border: "none",
-                    cursor: "pointer",
-                  }}
-                >
-                  Confirm & Continue
-                </button>
-              </Form>
-            </div>
+              const isCurrentPaid = currentPlanKey !== "free" && currentPlanKey !== "trial" && subscription.shopifyChargeStatus === "active";
+              const isTargetPro = activeConfirmPlanKey === "pro_monthly" || activeConfirmPlanKey === "pro_annual";
+              const showProUpgradeTimingChoice = isCurrentPaid && isTargetPro;
+
+              return (
+                <>
+                  <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 12px 0", color: C.text }}>
+                    {showProUpgradeTimingChoice ? "Upgrade to Pro Plan" : "Confirm Plan Change"}
+                  </h3>
+                  
+                  {showProUpgradeTimingChoice ? (
+                    <div>
+                      <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 20px 0" }}>
+                        Choose when you would like your upgrade to the **Pro plan** to take effect:
+                      </p>
+                      
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
+                        <label style={{
+                          display: "block",
+                          padding: "14px 16px",
+                          borderRadius: 12,
+                          border: upgradeTiming === "APPLY_IMMEDIATELY" ? `1px solid ${C.accent}` : `1px solid ${C.border}`,
+                          backgroundColor: upgradeTiming === "APPLY_IMMEDIATELY" ? "rgba(0, 196, 140, 0.05)" : "transparent",
+                          cursor: "pointer",
+                          transition: "border-color 0.2s ease, background-color 0.2s ease",
+                          boxSizing: "border-box",
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                            <input
+                              type="radio"
+                              name="timing_choice"
+                              value="APPLY_IMMEDIATELY"
+                              checked={upgradeTiming === "APPLY_IMMEDIATELY"}
+                              onChange={() => setUpgradeTiming("APPLY_IMMEDIATELY")}
+                              style={{ accentColor: C.accent, cursor: "pointer" }}
+                            />
+                            <span style={{ fontSize: 13, fontWeight: "bold", color: C.text }}>
+                              Upgrade right now
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
+                            Shopify will charge you the difference immediately. A prorated credit for the unused time of your current plan will be applied.
+                          </div>
+                        </label>
+
+                        <label style={{
+                          display: "block",
+                          padding: "14px 16px",
+                          borderRadius: 12,
+                          border: upgradeTiming === "APPLY_ON_NEXT_BILLING_CYCLE" ? `1px solid ${C.accent}` : `1px solid ${C.border}`,
+                          backgroundColor: upgradeTiming === "APPLY_ON_NEXT_BILLING_CYCLE" ? "rgba(0, 196, 140, 0.05)" : "transparent",
+                          cursor: "pointer",
+                          transition: "border-color 0.2s ease, background-color 0.2s ease",
+                          boxSizing: "border-box",
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                            <input
+                              type="radio"
+                              name="timing_choice"
+                              value="APPLY_ON_NEXT_BILLING_CYCLE"
+                              checked={upgradeTiming === "APPLY_ON_NEXT_BILLING_CYCLE"}
+                              onChange={() => setUpgradeTiming("APPLY_ON_NEXT_BILLING_CYCLE")}
+                              style={{ accentColor: C.accent, cursor: "pointer" }}
+                            />
+                            <span style={{ fontSize: 13, fontWeight: "bold", color: C.text }}>
+                              Upgrade next month
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
+                            Keep your current plan active for now. The Pro plan will start automatically on your next billing cycle: <strong>{expiryString}</strong>.
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  ) : (
+                    <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 24px 0" }}>
+                      {subscription.shopifyChargeStatus === "cancelled"
+                        ? `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts.`
+                        : `You are switching to the ${targetPlan?.name || activeConfirmPlanKey}. This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`
+                      }
+                    </p>
+                  )}
+
+                  <div style={{ display: "flex", gap: 12, justifyContent: "end" }}>
+                    <button
+                      type="button"
+                      onClick={() => setActiveConfirmPlanKey(null)}
+                      style={{
+                        padding: "10px 18px",
+                        borderRadius: 10,
+                        fontSize: 12,
+                        fontWeight: "bold",
+                        backgroundColor: "transparent",
+                        color: C.text,
+                        border: `1px solid ${C.border}`,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <Form method="post" style={{ margin: 0, padding: 0 }}>
+                      <input type="hidden" name="intent" value="upgrade" />
+                      <input type="hidden" name="plan" value={activeConfirmPlanKey} />
+                      <input type="hidden" name="replacement_behavior" value={upgradeTiming} />
+                      <button
+                        type="submit"
+                        onClick={() => setActiveConfirmPlanKey(null)}
+                        style={{
+                          padding: "10px 18px",
+                          borderRadius: 10,
+                          fontSize: 12,
+                          fontWeight: "bold",
+                          backgroundColor: C.accent,
+                          color: "#03251c",
+                          border: "none",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Confirm & Continue
+                      </button>
+                    </Form>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

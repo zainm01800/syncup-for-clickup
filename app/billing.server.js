@@ -269,7 +269,7 @@ export function getTrialBannerStatus(subscription) {
   }
 }
 
-export async function createShopifySubscription(admin, shop, planKey) {
+export async function createShopifySubscription(admin, shop, planKey, replacementBehavior = "APPLY_IMMEDIATELY") {
   const plan = PLANS[planKey];
   if (!plan) throw new Error("Plan not found");
 
@@ -290,7 +290,7 @@ export async function createShopifySubscription(admin, shop, planKey) {
     chargedPrice = plan.regularPrice || plan.price;
   }
 
-  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?activated=${planKey}`;
+  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?activated=${planKey}&replacement_behavior=${replacementBehavior}`;
   const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
   const res = await admin.graphql(
@@ -336,7 +336,7 @@ export async function createShopifySubscription(admin, shop, planKey) {
         returnUrl,
         // Use real charges in production. Set SHOPIFY_BILLING_TEST=true in .env for local sandbox testing.
         test: process.env.SHOPIFY_BILLING_TEST === "true",
-        replacementBehavior: "APPLY_IMMEDIATELY",
+        replacementBehavior: replacementBehavior,
       },
     }
   );
