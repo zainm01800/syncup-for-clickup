@@ -996,7 +996,7 @@ export default function BillingPage() {
                         {isSubmitting
                           ? "Connecting..."
                           : isDowngradeOption
-                          ? "Downgrade to Free"
+                          ? (key === "free" ? "Downgrade to Free" : `Downgrade to ${plan.name.split(" ")[0]}`)
                           : key === "free"
                           ? "Select Free"
                           : `Get ${plan.name.split(" ")[0]}`}
