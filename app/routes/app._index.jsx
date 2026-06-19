@@ -2202,7 +2202,7 @@ export default function Index() {
                         </div>
                         {subscription.planName === "trial" ? (
                           <div style={styles.usageText}>
-                            Your 14-day trial ends on {subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : ""}
+                            Your 7-day trial ends on {subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : ""}
                           </div>
                         ) : (
                           <div style={styles.usageText}>

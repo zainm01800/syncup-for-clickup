@@ -24,7 +24,7 @@ export async function getOrCreateSubscription(shop) {
 
   if (!sub) {
     const trialStart = new Date();
-    const trialEnd = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days trial duration
+    const trialEnd = new Date(trialStart.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days trial duration
     sub = await prisma.subscription.create({
       data: {
         shopDomain: shop,
@@ -38,7 +38,7 @@ export async function getOrCreateSubscription(shop) {
         updatedAt: new Date(),
       },
     });
-    await logActivity(shop, "trial_started", "14-day free trial started");
+    await logActivity(shop, "trial_started", "7-day free trial started");
     return sub;
   }
 
