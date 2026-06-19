@@ -1142,19 +1142,18 @@ export default function BillingPage() {
               const isUpgrade = targetLevel > currentLevel;
 
               const isCurrentPaid = currentPlanKey !== "free" && currentPlanKey !== "trial" && subscription.shopifyChargeStatus === "active";
-              const isTargetPro = activeConfirmPlanKey === "pro_monthly" || activeConfirmPlanKey === "pro_annual";
-              const showProUpgradeTimingChoice = isCurrentPaid && isTargetPro && isUpgrade;
+              const showUpgradeTimingChoice = isCurrentPaid && isUpgrade;
 
               return (
                 <>
                   <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 12px 0", color: C.text }}>
-                    {showProUpgradeTimingChoice ? "Upgrade to Pro Plan" : "Confirm Plan Change"}
+                    {showUpgradeTimingChoice ? `Upgrade to ${targetPlan?.name?.split(" ")[0] || "New"} Plan` : "Confirm Plan Change"}
                   </h3>
                   
-                  {showProUpgradeTimingChoice ? (
+                  {showUpgradeTimingChoice ? (
                     <div>
                       <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 20px 0" }}>
-                        Choose when you would like your upgrade to the **Pro plan** to take effect:
+                        Choose when you would like your upgrade to the <strong style={{ color: C.text }}>{targetPlan?.name || activeConfirmPlanKey}</strong> to take effect:
                       </p>
                       
                       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
