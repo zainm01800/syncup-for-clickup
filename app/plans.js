@@ -58,9 +58,9 @@ export const PLANS = {
     shopifyPlanName: "SyncUp Growth Monthly",
     annual: false,
     listLimit: 5,
-    monthlyOrderLimit: null,
+    monthlyOrderLimit: 1000,
     features: [
-      "Unlimited synced orders / mo",
+      "Up to 1,000 synced orders / mo",
       "Up to 5 ClickUp list connections",
       "ClickUp Custom Field Mapping (Map addresses, totals, and emails directly to ClickUp columns)",
       "Smart Multi-List Routing (Route orders based on product SKU, title, or vendor keywords)",
@@ -76,9 +76,9 @@ export const PLANS = {
     shopifyPlanName: "SyncUp Growth Annual",
     annual: true,
     listLimit: 5,
-    monthlyOrderLimit: null,
+    monthlyOrderLimit: 1000,
     features: [
-      "Unlimited synced orders / mo",
+      "Up to 1,000 synced orders / mo",
       "Up to 5 ClickUp list connections",
       "ClickUp Custom Field Mapping (Map addresses, totals, and emails directly to ClickUp columns)",
       "Smart Multi-List Routing (Route orders based on product SKU, title, or vendor keywords)",
