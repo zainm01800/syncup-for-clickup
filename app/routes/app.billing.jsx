@@ -193,6 +193,7 @@ export default function BillingPage() {
     subscription.planName.endsWith("_annual") ? "annual" : "monthly"
   );
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [activeConfirmPlanKey, setActiveConfirmPlanKey] = useState(null);
 
   useEffect(() => {
     if (actionData?.confirmationUrl) {
@@ -986,43 +987,40 @@ export default function BillingPage() {
                       </div>
                     )
                   ) : (
-                    <Form method="post" style={{ margin: 0, padding: 0 }}>
-                      <input type="hidden" name="intent" value="upgrade" />
-                      <input type="hidden" name="plan" value={planKey} />
-                      <button
-                        type="submit"
-                        style={getButtonStyle(isHighlighted)}
-                        disabled={isSubmitting}
-                        onMouseEnter={(e) => {
-                          if (isHighlighted) {
-                            e.currentTarget.style.backgroundColor = "#34d399";
-                            e.currentTarget.style.transform = "scale(1.02)";
-                          } else {
-                            e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.05)";
-                            e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)";
-                            e.currentTarget.style.transform = "scale(1.02)";
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (isHighlighted) {
-                            e.currentTarget.style.backgroundColor = C.accent;
-                            e.currentTarget.style.transform = "scale(1)";
-                          } else {
-                            e.currentTarget.style.backgroundColor = C.surface;
-                            e.currentTarget.style.borderColor = C.border;
-                            e.currentTarget.style.transform = "scale(1)";
-                          }
-                        }}
-                      >
-                        {isSubmitting
-                          ? "Connecting..."
-                          : isDowngradeOption
-                          ? (key === "free" ? "Downgrade to Free" : `Downgrade to ${plan.name.split(" ")[0]}`)
-                          : key === "free"
-                          ? "Select Free"
-                          : `Get ${plan.name.split(" ")[0]}`}
-                      </button>
-                    </Form>
+                    <button
+                      type="button"
+                      onClick={() => setActiveConfirmPlanKey(planKey)}
+                      style={getButtonStyle(isHighlighted)}
+                      disabled={isSubmitting}
+                      onMouseEnter={(e) => {
+                        if (isHighlighted) {
+                          e.currentTarget.style.backgroundColor = "#34d399";
+                          e.currentTarget.style.transform = "scale(1.02)";
+                        } else {
+                          e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.05)";
+                          e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)";
+                          e.currentTarget.style.transform = "scale(1.02)";
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (isHighlighted) {
+                          e.currentTarget.style.backgroundColor = C.accent;
+                          e.currentTarget.style.transform = "scale(1)";
+                        } else {
+                          e.currentTarget.style.backgroundColor = C.surface;
+                          e.currentTarget.style.borderColor = C.border;
+                          e.currentTarget.style.transform = "scale(1)";
+                        }
+                      }}
+                    >
+                      {isSubmitting
+                        ? "Connecting..."
+                        : isDowngradeOption
+                        ? (key === "free" ? "Downgrade to Free" : `Downgrade to ${plan.name.split(" ")[0]}`)
+                        : key === "free"
+                        ? "Select Free"
+                        : `Get ${plan.name.split(" ")[0]}`}
+                    </button>
                   )}
                 </div>
 
@@ -1044,6 +1042,92 @@ export default function BillingPage() {
         }}>
           Shopify manages all subscriptions securely. You can cancel or change your plan at any time. Moving between paid plans uses immediate replacement overrides.
         </p>
+      {/* Plan Change Confirmation Modal */}
+      {activeConfirmPlanKey && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100vw",
+          height: "100vh",
+          backgroundColor: "rgba(0, 0, 0, 0.75)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9999,
+          backdropFilter: "blur(4px)",
+        }}>
+          <div style={{
+            backgroundColor: C.surface,
+            border: `1px solid ${C.border}`,
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 460,
+            width: "90%",
+            boxSizing: "border-box",
+            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.3)",
+          }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 12px 0", color: C.text }}>
+              Confirm Plan Change
+            </h3>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 24px 0" }}>
+              {(() => {
+                const targetPlan = PLANS[activeConfirmPlanKey];
+                const currentPlan = PLANS[currentPlanKey];
+                
+                const durationDays = subscription.annualBilling ? 365 : 30;
+                const cycleStart = subscription.billingCycleStart || subscription.createdAt;
+                const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+                const expiryString = expirationDate.toLocaleDateString();
+
+                if (subscription.shopifyChargeStatus === "cancelled") {
+                  return `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts.`;
+                } else {
+                  return `You are switching to the ${targetPlan?.name || activeConfirmPlanKey}. This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`;
+                }
+              })()}
+            </p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "end" }}>
+              <button
+                type="button"
+                onClick={() => setActiveConfirmPlanKey(null)}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: 10,
+                  fontSize: 12,
+                  fontWeight: "bold",
+                  backgroundColor: "transparent",
+                  color: C.text,
+                  border: `1px solid ${C.border}`,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <Form method="post" style={{ margin: 0, padding: 0 }}>
+                <input type="hidden" name="intent" value="upgrade" />
+                <input type="hidden" name="plan" value={activeConfirmPlanKey} />
+                <button
+                  type="submit"
+                  onClick={() => setActiveConfirmPlanKey(null)}
+                  style={{
+                    padding: "10px 18px",
+                    borderRadius: 10,
+                    fontSize: 12,
+                    fontWeight: "bold",
+                    backgroundColor: C.accent,
+                    color: "#03251c",
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  Confirm & Continue
+                </button>
+              </Form>
+            </div>
+          </div>
+        </div>
+      )}
 
       </div>
     </div>
