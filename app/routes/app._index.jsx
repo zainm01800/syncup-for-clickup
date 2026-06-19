@@ -1014,6 +1014,9 @@ export default function Index() {
   const [selectedTool, setSelectedTool] = useState(null);
   const [localTaskTemplate, setLocalTaskTemplate] = useState(taskNameTemplate || "");
   const [localTaskDescriptionTemplate, setLocalTaskDescriptionTemplate] = useState(taskDescriptionTemplate || "");
+
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showDisconnectModal, setShowDisconnectModal] = useState(false);
   const [localSyncTrigger, setLocalSyncTrigger] = useState(syncTrigger || "payment_confirmed");
   const [localSubtasks, setLocalSubtasks] = useState(subtasksEnabled || false);
   const [localTwoWaySync, setLocalTwoWaySync] = useState(twoWaySyncEnabled || false);
@@ -1262,14 +1265,7 @@ export default function Index() {
   const statusCfg = SYNC_STATUS_CONFIG[syncStatus];
 
   const handleDisconnect = (e) => {
-    const platformName = selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion";
-    if (
-      !window.confirm(
-        `Are you sure you want to disconnect ${platformName}? Order syncing will stop immediately.`
-      )
-    ) {
-      e.preventDefault();
-    }
+    // Handled via in-app confirmation modal
   };
 
   const getPlanDisplayName = (planName) => {
@@ -1988,16 +1984,14 @@ export default function Index() {
                               : `${selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} connected`}
                           </span>
                         </div>
-                        <Form method="post" onSubmit={handleDisconnect}>
-                          <input type="hidden" name="intent" value="disconnect" />
-                          <button
-                            type="submit"
-                            style={styles.dangerButton}
-                            disabled={isSubmitting}
-                          >
-                            Disconnect
-                          </button>
-                        </Form>
+                        <button
+                          type="button"
+                          onClick={() => setShowDisconnectModal(true)}
+                          style={styles.dangerButton}
+                          disabled={isSubmitting}
+                        >
+                          Disconnect
+                        </button>
                       </div>
 
                       <h2 style={styles.cardTitle}>Configure order {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"} connections</h2>
@@ -2361,16 +2355,14 @@ export default function Index() {
                               </button>
                             </Form>
 
-                            <Form method="post" onSubmit={handleDisconnect}>
-                              <input type="hidden" name="intent" value="disconnect" />
-                              <button
-                                type="submit"
-                                style={styles.dangerButton}
-                                disabled={isSubmitting}
-                              >
-                                Disconnect
-                              </button>
-                            </Form>
+                            <button
+                              type="button"
+                              onClick={() => setShowDisconnectModal(true)}
+                              style={styles.dangerButton}
+                              disabled={isSubmitting}
+                            >
+                              Disconnect
+                            </button>
                           </div>
                         </div>
                         {selectedPlatform === "clickup" && isFreePlan && (
@@ -3076,12 +3068,10 @@ export default function Index() {
                               disabled={selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
                               onClick={() => {
                                 if (!localTwoWaySync) {
-                                  const confirm = window.confirm(
-                                    "⚠️ Warning: Enabling this option will automatically fulfill and close Shopify orders when their corresponding tasks are marked complete in your project management tool. Do you want to continue?"
-                                  );
-                                  if (!confirm) return;
+                                  setShowConfirmModal(true);
+                                } else {
+                                  setLocalTwoWaySync(false);
                                 }
-                                setLocalTwoWaySync((v) => !v);
                               }}
                               style={{
                                 width: 44,
@@ -3315,6 +3305,151 @@ export default function Index() {
           </footer>
         </div>
       </div>
+
+      {/* IN-APP CONFIRMATION MODALS */}
+      {showConfirmModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(0,0,0,0.6)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 999999
+        }}>
+          <div style={{
+            background: "#151515",
+            border: `1px solid ${C.border}`,
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 480,
+            width: "90%",
+            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.5)",
+            textAlign: "center"
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: "#ffffff", marginBottom: 12 }}>
+              Enable Two-Way Sync?
+            </h3>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 20 }}>
+              Enabling this option will automatically fulfill and close Shopify orders when their corresponding tasks are marked complete in your project management tool.
+            </p>
+            <div style={{ display: "flex", justifyContent: "center", gap: 12 }}>
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                style={{
+                  background: "rgba(255,255,255,0.06)",
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLocalTwoWaySync(true);
+                  setShowConfirmModal(false);
+                }}
+                style={{
+                  background: C.accent,
+                  border: "none",
+                  color: "#03251c",
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer"
+                }}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDisconnectModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(0,0,0,0.6)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 999999
+        }}>
+          <div style={{
+            background: "#151515",
+            border: `1px solid ${C.border}`,
+            borderRadius: 16,
+            padding: 24,
+            maxWidth: 480,
+            width: "90%",
+            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.5)",
+            textAlign: "center"
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>🔌</div>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: "#ffffff", marginBottom: 12 }}>
+              Disconnect Integration?
+            </h3>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 20 }}>
+              Are you sure you want to disconnect? This will immediately pause all automated order syncing between Shopify and your project management board.
+            </p>
+            <div style={{ display: "flex", justifyContent: "center", gap: 12 }}>
+              <button
+                type="button"
+                onClick={() => setShowDisconnectModal(false)}
+                style={{
+                  background: "rgba(255,255,255,0.06)",
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <Form method="post" style={{ display: "inline" }}>
+                <input type="hidden" name="intent" value="disconnect" />
+                <button
+                  type="submit"
+                  onClick={() => setShowDisconnectModal(false)}
+                  style={{
+                    background: "#ff4444",
+                    border: "none",
+                    color: "#ffffff",
+                    padding: "8px 16px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer"
+                  }}
+                >
+                  Disconnect
+                </button>
+              </Form>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

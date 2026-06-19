@@ -38,3 +38,4 @@ database.sqlite
 # Generated listing rasters (regenerate from the public/*.svg sources via scripts/render-png.mjs)
 /app-icon-1200.png
 /screenshot-*.png
+.env*.local

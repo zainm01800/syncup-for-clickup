@@ -6,7 +6,7 @@ application_url = "https://syncup-for-clickup.vercel.app"
 embedded = true
 
 [access_scopes]
-scopes = "read_orders,read_customers"
+scopes = "read_orders,read_customers,write_merchant_managed_fulfillment_orders"
 
 [webhooks]
 api_version = "2026-07"
