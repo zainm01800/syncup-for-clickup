@@ -1305,6 +1305,45 @@ export async function downgradeToFree(shop) {
 ```javascript
 import prisma from "./db.server";
 import { encryptToken, decryptToken } from "./crypto.server";
+import { randomBytes } from "node:crypto";
+
+/** Cryptographically-random per-connection secret embedded in inbound webhook URLs. */
+export function generateWebhookSecret() {
+  return randomBytes(24).toString("hex");
+}
+
+/**
+ * Ensures a PlatformConnection has a webhookSecret, minting + persisting one if
+ * missing (legacy rows predating inbound-webhook auth have NULL). Returns the secret.
+ */
+export async function ensureWebhookSecret(connectionId) {
+  const conn = await prisma.platformConnection.findUnique({
+    where: { id: connectionId },
+    select: { webhookSecret: true },
+  });
+  if (conn?.webhookSecret) return conn.webhookSecret;
+
+  const secret = generateWebhookSecret();
+  await prisma.platformConnection.update({
+    where: { id: connectionId },
+    data: { webhookSecret: secret },
+  });
+  return secret;
+}
+
+/**
+ * Looks up the active PlatformConnection whose webhookSecret matches `token` for a
+ * given provider. Used to authenticate inbound ClickUp/Monday completion callbacks.
+ * Returns null on any mismatch so callers can respond 401.
+ */
+export async function findConnectionByWebhookSecret(token, provider) {
+  if (!token) return null;
+  const conn = await prisma.platformConnection.findFirst({
+    where: { webhookSecret: token, isActive: true, provider },
+    select: { id: true, shopDomain: true, provider: true },
+  });
+  return conn || null;
+}
 
 
 // Fallback used only when the orders/create webhook payload arrives without a
@@ -1599,6 +1638,10 @@ export async function getAllConnections(shop) {
 export async function saveToken(shop, accessToken, workspaceName = null, isFreePlan = false) {
   const encryptedToken = await encryptToken(accessToken);
 
+  // Mint a fresh webhook secret on every connect/reconnect so the inbound
+  // ClickUp completion webhook URL is rotated with the new connection.
+  const webhookSecret = generateWebhookSecret();
+
   const conn = await prisma.platformConnection.upsert({
     where: {
       shopDomain_provider: {
@@ -1608,13 +1651,15 @@ export async function saveToken(shop, accessToken, workspaceName = null, isFreeP
     },
     update: {
       encryptedAccessToken: encryptedToken,
-      isActive: true
+      isActive: true,
+      webhookSecret
     },
     create: {
       shopDomain: shop,
       provider: "CLICKUP",
       encryptedAccessToken: encryptedToken,
-      isActive: true
+      isActive: true,
+      webhookSecret
     }
   });
 
@@ -1687,15 +1732,17 @@ export async function saveListConnections(shop, listConnections) {
 
   if (activeConn.provider === "CLICKUP") {
     try {
-      await registerClickUpWebhook(shop, decryptedToken);
+      const webhookSecret = await ensureWebhookSecret(activeConn.id);
+      await registerClickUpWebhook(shop, decryptedToken, webhookSecret);
     } catch (err) {
       console.error("Failed to register ClickUp webhook on connection save:", err);
     }
   } else if (activeConn.provider === "MONDAY") {
+    const webhookSecret = await ensureWebhookSecret(activeConn.id);
     for (const target of listConnections) {
       if (target.id) {
         try {
-          await registerMondayWebhook(target.id, decryptedToken);
+          await registerMondayWebhook(target.id, decryptedToken, webhookSecret);
         } catch (err) {
           console.error(`Failed to register Monday webhook on board ${target.id} on save:`, err);
         }
@@ -1944,14 +1991,15 @@ export async function uploadTaskAttachment(token, taskId, fileUrl, filename) {
   return res.json();
 }
 
-export async function registerClickUpWebhook(shop, token) {
+export async function registerClickUpWebhook(shop, token, webhookSecret) {
   try {
     const teams = await getTeams(token);
     if (!teams || teams.length === 0) return null;
     const teamId = teams[0].id;
-    
+
     const appUrl = process.env.SHOPIFY_APP_URL || "https://syncup-for-clickup.vercel.app";
-    const endpointUrl = `${appUrl}/api/webhooks/clickup`;
+    // Embed the per-connection secret so the inbound callback can be authenticated.
+    const endpointUrl = `${appUrl}/api/webhooks/clickup?token=${encodeURIComponent(webhookSecret || "")}`;
     
     // Check if webhook already exists for this team to avoid duplicates
     let existingWebhooks = [];
@@ -1984,10 +2032,11 @@ export async function registerClickUpWebhook(shop, token) {
   }
 }
 
-export async function registerMondayWebhook(boardId, token) {
+export async function registerMondayWebhook(boardId, token, webhookSecret) {
   try {
     const appUrl = process.env.SHOPIFY_APP_URL || "https://syncup-for-clickup.vercel.app";
-    const endpointUrl = `${appUrl}/api/webhooks/monday`;
+    // Embed the per-connection secret so the inbound callback can be authenticated.
+    const endpointUrl = `${appUrl}/api/webhooks/monday?token=${encodeURIComponent(webhookSecret || "")}`;
     
     const query = `
       mutation create_webhook($boardId: ID!, $url: String!) {
@@ -2933,7 +2982,6 @@ async function handleJobProcess(request) {
     { default: prisma },
     {
       getConnection,
-      getAllConnections,
       fetchShopifyCustomer,
       logActivity,
       compileMarkdownTable,
@@ -2997,31 +3045,24 @@ async function handleJobProcess(request) {
       // Check sync trigger setting
       const syncTrigger = subscription.syncTrigger || "payment_confirmed";
       if (syncTrigger === "payment_confirmed" && payload.financial_status !== "paid") {
-        await prisma.syncJob.update({
-          where: { id: job.id },
-          data: { status: "completed" }
-        });
+        // Delete (don't keep) — the order isn't ready yet. The orders/updated
+        // webhook (or reconciliation) re-enqueues it once it becomes paid. Keeping
+        // a row would retain customer PII and poison reconciliation's dedup.
+        await prisma.syncJob.delete({ where: { id: job.id } });
         results.push({ jobId: job.id, success: true, skipped: true, reason: "trigger:not_paid" });
         continue;
       }
       if (syncTrigger === "on_fulfillment_start" && !payload.fulfillment_status) {
-        await prisma.syncJob.update({
-          where: { id: job.id },
-          data: { status: "completed" }
-        });
+        await prisma.syncJob.delete({ where: { id: job.id } });
         results.push({ jobId: job.id, success: true, skipped: true, reason: "trigger:not_fulfilling" });
         continue;
       }
 
-      // Determine active connections to process based on Pro tier allowance
-      const isPro = subscription.planName.startsWith("pro");
-      let activeConnections = [];
-      if (isPro) {
-        activeConnections = await getAllConnections(shopDomain);
-      } else {
-        const conn = await getConnection(shopDomain);
-        activeConnections = conn ? [conn] : [];
-      }
+      // The dashboard enforces a single active provider per shop, so every tier
+      // syncs through that one connection. (Pro's "unlimited connections" refers
+      // to list/board targets via SyncTarget, not multiple providers at once.)
+      const conn = await getConnection(shopDomain);
+      const activeConnections = conn ? [conn] : [];
 
       if (activeConnections.length === 0) {
         throw new Error(`No active platform connections configured for ${shopDomain}`);
@@ -3319,7 +3360,10 @@ async function reconcileShopStorefront(shopDomain) {
       select: { shopifyOrderId: true }
     }),
     prisma.syncJob.findMany({
-      where: { shopDomain, shopifyOrderId: { in: orderIds } },
+      // Only in-flight jobs suppress re-enqueueing. Terminal/completed rows are
+      // not created anymore (skipped jobs are deleted), but filtering here is
+      // belt-and-suspenders so a stale row can't hide a dropped order.
+      where: { shopDomain, shopifyOrderId: { in: orderIds }, status: { in: ["pending", "processing", "failed"] } },
       select: { shopifyOrderId: true }
     })
   ]);
@@ -3391,16 +3435,23 @@ async function reconcileShopStorefront(shopDomain) {
 ```jsx
 const json = Response.json;
 import prisma from "../db.server";
-import { logActivity } from "../clickup.server";
+import { logActivity, findConnectionByWebhookSecret } from "../clickup.server";
 
 export const action = async ({ request }) => {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
+  // Authenticate the callback via the per-connection secret embedded in the URL.
+  // ClickUp POSTs to the exact registered endpoint, which includes ?token=<secret>.
+  const token = new URL(request.url).searchParams.get("token");
+  const connection = await findConnectionByWebhookSecret(token, "CLICKUP");
+  if (!connection) {
+    return json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const payload = await request.json();
-    console.log("Received ClickUp webhook payload:", JSON.stringify(payload));
 
     const taskId = payload.task_id;
     if (!taskId) {
@@ -3421,9 +3472,10 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: `Status '${afterStatus}' is not a fulfillment trigger` });
     }
 
-    // Look up OrderSyncRecord
+    // Look up OrderSyncRecord, scoped to the authenticated connection's shop so a
+    // secret can't be used against another shop's records.
     const record = await prisma.orderSyncRecord.findFirst({
-      where: { targetRecordId: taskId }
+      where: { targetRecordId: taskId, shopDomain: connection.shopDomain }
     });
 
     if (!record) {
@@ -3550,16 +3602,24 @@ export const action = async ({ request }) => {
 ```jsx
 const json = Response.json;
 import prisma from "../db.server";
-import { logActivity } from "../clickup.server";
+import { logActivity, findConnectionByWebhookSecret } from "../clickup.server";
 
 export const action = async ({ request }) => {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
+  // Authenticate the callback via the per-connection secret embedded in the URL.
+  // Monday POSTs (including the verification challenge) to the exact registered
+  // endpoint, which includes ?token=<secret>.
+  const token = new URL(request.url).searchParams.get("token");
+  const connection = await findConnectionByWebhookSecret(token, "MONDAY");
+  if (!connection) {
+    return json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const payload = await request.json();
-    console.log("Received Monday.com webhook payload:", JSON.stringify(payload));
 
     // 1. Monday.com Webhook URL verification handshake
     if (payload.challenge) {
@@ -3595,9 +3655,10 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: `Status '${newStatusLabel}' is not a fulfillment trigger` });
     }
 
-    // Look up OrderSyncRecord
+    // Look up OrderSyncRecord, scoped to the authenticated connection's shop so a
+    // secret can't be used against another shop's records.
     const record = await prisma.orderSyncRecord.findFirst({
-      where: { targetRecordId: pulseId }
+      where: { targetRecordId: pulseId, shopDomain: connection.shopDomain }
     });
 
     if (!record) {
@@ -5259,7 +5320,7 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  const { getConnection, disconnect, logActivity, saveListConnections } = await import("../clickup.server");
+  const { getConnection, disconnect, logActivity, saveListConnections, generateWebhookSecret } = await import("../clickup.server");
 
   if (intent === "join_waitlist") {
     const platform = formData.get("platform");
@@ -5382,7 +5443,9 @@ export const action = async ({ request }) => {
         }
       }
 
-      // Upsert new connection
+      // Upsert new connection — mint a fresh webhook secret on every connect so
+      // the inbound completion webhook URL is rotated with the new token.
+      const webhookSecret = generateWebhookSecret();
       const conn = await prisma.platformConnection.upsert({
         where: {
           shopDomain_provider: {
@@ -5392,13 +5455,15 @@ export const action = async ({ request }) => {
         },
         update: {
           encryptedAccessToken: encryptedToken,
-          isActive: true
+          isActive: true,
+          webhookSecret
         },
         create: {
           shopDomain: shop,
           provider: platform.toUpperCase(),
           encryptedAccessToken: encryptedToken,
-          isActive: true
+          isActive: true,
+          webhookSecret
         }
       });
 
@@ -5438,17 +5503,24 @@ export const action = async ({ request }) => {
       if (parsed.length > 100) {
         return { ok: false, error: "You cannot map more than 100 fields." };
       }
-      for (const m of parsed) {
-        if (!m.clickupFieldId || !m.shopifySourceField) {
-          return { ok: false, error: "Invalid mapping configuration." };
-        }
-      }
 
       const activeConn = await prisma.platformConnection.findFirst({
         where: { shopDomain: shop, isActive: true }
       });
       if (!activeConn) {
         return { ok: false, error: "No active connection found." };
+      }
+
+      // Require the target-field key that the adapter actually reads for this
+      // provider, so mappings don't silently fall through to a wrong column.
+      const targetFieldKey =
+        activeConn.provider === "MONDAY" ? "mondayColumnId"
+        : activeConn.provider === "NOTION" ? "notionPropertyId"
+        : "clickupFieldId";
+      for (const m of parsed) {
+        if (!m[targetFieldKey] || !m.shopifySourceField) {
+          return { ok: false, error: "Invalid mapping configuration." };
+        }
       }
 
       if (activeConn.provider === "CLICKUP") {
@@ -5744,9 +5816,11 @@ function InfoTooltip({ text }) {
     <span
       style={{
         position: "relative",
-        display: "inline-block",
+        display: "inline-flex",
+        alignItems: "center",
+        verticalAlign: "middle",
         cursor: "pointer",
-        marginLeft: 4,
+        marginLeft: 6,
         userSelect: "none",
       }}
       onMouseEnter={() => setVisible(true)}
@@ -5756,7 +5830,7 @@ function InfoTooltip({ text }) {
         setVisible(!visible);
       }}
     >
-      <span style={{ color: "#9a9a9a", fontSize: 13 }}>ⓘ</span>
+      <span style={{ color: "#9a9a9a", fontSize: 13, lineHeight: 1 }}>ⓘ</span>
       {visible && (
         <span
           style={{
@@ -5849,6 +5923,40 @@ export default function Index() {
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+
+  const [dismissedBanners, setDismissedBanners] = useState({});
+
+  useEffect(() => {
+    setDismissedBanners({});
+  }, [actionData]);
+
+  const renderBanner = (key, content, style) => {
+    if (dismissedBanners[key]) return null;
+    return (
+      <div style={{ ...style, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ flex: 1, paddingRight: 8 }}>{content}</div>
+        <button
+          type="button"
+          onClick={() => setDismissedBanners((prev) => ({ ...prev, [key]: true }))}
+          style={{
+            background: "none",
+            border: "none",
+            color: "inherit",
+            cursor: "pointer",
+            fontSize: 16,
+            fontWeight: "bold",
+            padding: "0 4px",
+            lineHeight: 1,
+            opacity: 0.6,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+          onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.6")}
+        >
+          &times;
+        </button>
+      </div>
+    );
+  };
 
   const [conns, setConns] = useState(
     listConnections.length > 0
@@ -6321,36 +6429,13 @@ export default function Index() {
           )}
 
           {/* Action/Success Banners */}
-          {billingSuccess && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              ✓ Your plan has been updated successfully.
-            </div>
-          )}
-          {actionData?.sentTestTask && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              {`✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`}
-            </div>
-          )}
-          {actionData?.retriedAllFailed && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              {`✓ Successfully re-enqueued ${actionData.retriedCount} failed sync job(s) for processing.`}
-            </div>
-          )}
-          {actionData?.savedSettings && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              ✓ Sync settings saved successfully.
-            </div>
-          )}
-          {removedLists && (
-            <div style={{ ...styles.warningBanner, marginBottom: 16 }}>
-              ⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong>
-            </div>
-          )}
-          {(clickupError || actionData?.error) && (
-            <div style={{ ...styles.errorBanner, marginBottom: 16 }}>
-              {clickupError || actionData?.error}
-            </div>
-          )}
+          {billingSuccess && renderBanner("billingSuccess", "✓ Your plan has been updated successfully.", styles.successBanner)}
+          {actionData?.sentTestTask && renderBanner("sentTestTask", `✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`, styles.successBanner)}
+          {actionData?.retriedAllFailed && renderBanner("retriedAllFailed", `✓ Successfully re-enqueued ${actionData.retriedCount} failed sync job(s) for processing.`, styles.successBanner)}
+          {actionData?.savedSettings && renderBanner("savedSettings", "✓ Sync settings saved successfully.", styles.successBanner)}
+          {actionData?.saved && renderBanner("savedConnections", "✓ Connections and keyword routing saved successfully.", styles.successBanner)}
+          {removedLists && renderBanner("removedLists", <span>⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong></span>, styles.warningBanner)}
+          {(clickupError || actionData?.error) && renderBanner("actionError", clickupError || actionData?.error, styles.errorBanner)}
 
           {showFullPageUpgrade ? (
             /* SECTION 2 (Pricing cards) shown as full-page settings overlay */
@@ -6800,10 +6885,16 @@ export default function Index() {
                           </h2>
                           
                           <p style={styles.cardText}>
-                            {selectedTool === "monday" 
-                              ? "Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration > API." 
+                            {selectedTool === "monday"
+                              ? "Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration > API."
                               : "Enter your Notion Integration Token to connect your account. You can create an integration token at developers.notion.com/my-integrations."}
                           </p>
+
+                          {selectedTool === "notion" && (
+                            <div style={{ ...styles.errorBanner, background: "rgba(150,150,150,0.08)", color: "#cfcfcc", marginTop: 12 }}>
+                              Note: Notion sync is one-way. Orders are sent to Notion, but completing a Notion page will not auto-fulfill the Shopify order.
+                            </div>
+                          )}
 
                           {actionData?.error && (
                             <div style={{ ...styles.errorBanner, marginTop: 12, marginBottom: 12 }}>
@@ -7528,9 +7619,38 @@ export default function Index() {
                               )}
 
                               {clickupFields.length === 0 ? (
-                                <p style={styles.cardText}>
-                                  No custom {termFieldName.toLowerCase()}s found in your connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}. Create some first, then reload this page.
-                                </p>
+                                <div style={{
+                                  background: "rgba(255,153,0,0.02)",
+                                  border: `1px solid ${C.border}`,
+                                  borderRadius: 12,
+                                  padding: "24px 20px",
+                                  textAlign: "center",
+                                  marginTop: 16
+                                }}>
+                                  <div style={{ fontSize: 24, marginBottom: 8 }}>📋</div>
+                                  <h3 style={{ fontSize: 14, fontWeight: 700, color: "#ffffff", marginBottom: 6 }}>
+                                    No custom {termFieldName.toLowerCase()}s detected
+                                  </h3>
+                                  <p style={{ ...styles.cardText, maxWidth: 480, margin: "0 auto 16px auto", color: C.muted }}>
+                                    To map Shopify customer data directly to custom columns, please add columns (e.g. text, dates, numbers, checkboxes) inside your connected {platformName} {selectedPlatform === "clickup" ? "List settings" : selectedPlatform === "monday" ? "Board settings" : "Database properties"}.
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => window.location.reload()}
+                                    style={{
+                                      background: "rgba(255,255,255,0.06)",
+                                      border: `1px solid ${C.border}`,
+                                      color: C.text,
+                                      padding: "8px 16px",
+                                      borderRadius: 8,
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    🔄 Refresh Fields List
+                                  </button>
+                                </div>
                               ) : (
                                 <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
                                   {/* Table Header */}
@@ -7891,20 +8011,25 @@ export default function Index() {
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
                                 Mark task complete when order ships <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." />
-                                {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
+                                {selectedPlatform !== "notion" && !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
+                                )}
+                                {selectedPlatform === "notion" && (
+                                  <span style={{ fontSize: 9, background: "rgba(150,150,150,0.12)", color: "#9a9a9a", border: "1px solid rgba(150,150,150,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>One-way</span>
                                 )}
                               </div>
                               <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
-                                Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday.
+                                {selectedPlatform === "notion"
+                                  ? "Notion sync is one-way: orders are sent to Notion, but marking a Notion page complete will NOT auto-fulfill the Shopify order (Notion has no change webhooks)."
+                                  : "Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday."}
                               </div>
                             </div>
-                            <input type="hidden" name="twoWaySyncEnabled" value={String(localTwoWaySync)} />
+                            <input type="hidden" name="twoWaySyncEnabled" value={String(selectedPlatform === "notion" ? false : localTwoWaySync)} />
                             <button
                               type="button"
                               role="switch"
                               aria-checked={localTwoWaySync}
-                              disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                              disabled={selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
                               onClick={() => {
                                 if (!localTwoWaySync) {
                                   const confirm = window.confirm(
@@ -7920,12 +8045,12 @@ export default function Index() {
                                 borderRadius: 12,
                                 background: localTwoWaySync ? "#00c48c" : "#2a2a2a",
                                 border: "none",
-                                cursor: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? "not-allowed" : "pointer",
+                                cursor: (selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")) ? "not-allowed" : "pointer",
                                 position: "relative",
                                 flexShrink: 0,
                                 transition: "background 0.2s ease",
                                 outline: "none",
-                                opacity: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? 0.5 : 1
+                                opacity: (selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")) ? 0.5 : 1
                               }}
                             >
                               <span style={{
@@ -10309,7 +10434,7 @@ model Session {
 // Tracks the billing plan and monthly order usage for each shop.
 model Subscription {
   shopDomain             String    @id @map("shop_domain")
-  planName               String    @default("trial") @map("plan_name") // trial, starter_monthly, starter_annual, growth_monthly, growth_annual, expired, cancelled
+  planName               String    @default("trial") @map("plan_name") // trial, free, standard_monthly, standard_annual, growth_monthly, growth_annual, pro_monthly, pro_annual, expired, cancelled
   shopifyChargeId        String?   @map("shopify_charge_id")
   shopifyChargeStatus    String?   @map("shopify_charge_status")
   trialStartDate         DateTime  @default(now()) @map("trial_start_date")
@@ -10377,6 +10502,11 @@ model PlatformConnection {
   provider             IntegrationProvider
   isActive             Boolean             @default(true) @map("is_active")
   encryptedAccessToken String              @map("encrypted_access_token")
+  // Per-connection secret embedded in the inbound webhook URL (?token=) so we can
+  // authenticate ClickUp/Monday completion callbacks. See api.webhooks.clickup/monday.
+  // Nullable so the column can be added over existing rows; NULL = not yet secured
+  // (inbound webhooks 401 until the merchant reconnects, which mints a secret).
+  webhookSecret        String?             @unique @map("webhook_secret")
   healthStatus         String              @default("healthy") @map("health_status") // healthy | degraded | error
   lastHealthCheck      DateTime?           @map("last_health_check")
   createdAt            DateTime            @default(now()) @map("created_at")

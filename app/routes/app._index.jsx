@@ -860,9 +860,11 @@ function InfoTooltip({ text }) {
     <span
       style={{
         position: "relative",
-        display: "inline-block",
+        display: "inline-flex",
+        alignItems: "center",
+        verticalAlign: "middle",
         cursor: "pointer",
-        marginLeft: 4,
+        marginLeft: 6,
         userSelect: "none",
       }}
       onMouseEnter={() => setVisible(true)}
@@ -872,7 +874,7 @@ function InfoTooltip({ text }) {
         setVisible(!visible);
       }}
     >
-      <span style={{ color: "#9a9a9a", fontSize: 13 }}>ⓘ</span>
+      <span style={{ color: "#9a9a9a", fontSize: 13, lineHeight: 1 }}>ⓘ</span>
       {visible && (
         <span
           style={{
@@ -965,6 +967,40 @@ export default function Index() {
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+
+  const [dismissedBanners, setDismissedBanners] = useState({});
+
+  useEffect(() => {
+    setDismissedBanners({});
+  }, [actionData]);
+
+  const renderBanner = (key, content, style) => {
+    if (dismissedBanners[key]) return null;
+    return (
+      <div style={{ ...style, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ flex: 1, paddingRight: 8 }}>{content}</div>
+        <button
+          type="button"
+          onClick={() => setDismissedBanners((prev) => ({ ...prev, [key]: true }))}
+          style={{
+            background: "none",
+            border: "none",
+            color: "inherit",
+            cursor: "pointer",
+            fontSize: 16,
+            fontWeight: "bold",
+            padding: "0 4px",
+            lineHeight: 1,
+            opacity: 0.6,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+          onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.6")}
+        >
+          &times;
+        </button>
+      </div>
+    );
+  };
 
   const [conns, setConns] = useState(
     listConnections.length > 0
@@ -1437,36 +1473,13 @@ export default function Index() {
           )}
 
           {/* Action/Success Banners */}
-          {billingSuccess && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              ✓ Your plan has been updated successfully.
-            </div>
-          )}
-          {actionData?.sentTestTask && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              {`✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`}
-            </div>
-          )}
-          {actionData?.retriedAllFailed && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              {`✓ Successfully re-enqueued ${actionData.retriedCount} failed sync job(s) for processing.`}
-            </div>
-          )}
-          {actionData?.savedSettings && (
-            <div style={{ ...styles.successBanner, marginBottom: 16 }}>
-              ✓ Sync settings saved successfully.
-            </div>
-          )}
-          {removedLists && (
-            <div style={{ ...styles.warningBanner, marginBottom: 16 }}>
-              ⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong>
-            </div>
-          )}
-          {(clickupError || actionData?.error) && (
-            <div style={{ ...styles.errorBanner, marginBottom: 16 }}>
-              {clickupError || actionData?.error}
-            </div>
-          )}
+          {billingSuccess && renderBanner("billingSuccess", "✓ Your plan has been updated successfully.", styles.successBanner)}
+          {actionData?.sentTestTask && renderBanner("sentTestTask", `✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`, styles.successBanner)}
+          {actionData?.retriedAllFailed && renderBanner("retriedAllFailed", `✓ Successfully re-enqueued ${actionData.retriedCount} failed sync job(s) for processing.`, styles.successBanner)}
+          {actionData?.savedSettings && renderBanner("savedSettings", "✓ Sync settings saved successfully.", styles.successBanner)}
+          {actionData?.saved && renderBanner("savedConnections", "✓ Connections and keyword routing saved successfully.", styles.successBanner)}
+          {removedLists && renderBanner("removedLists", <span>⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong></span>, styles.warningBanner)}
+          {(clickupError || actionData?.error) && renderBanner("actionError", clickupError || actionData?.error, styles.errorBanner)}
 
           {showFullPageUpgrade ? (
             /* SECTION 2 (Pricing cards) shown as full-page settings overlay */
@@ -2650,9 +2663,38 @@ export default function Index() {
                               )}
 
                               {clickupFields.length === 0 ? (
-                                <p style={styles.cardText}>
-                                  No custom {termFieldName.toLowerCase()}s found in your connected {selectedPlatform === "clickup" ? "list" : selectedPlatform === "monday" ? "board" : "database"}. Create some first, then reload this page.
-                                </p>
+                                <div style={{
+                                  background: "rgba(255,153,0,0.02)",
+                                  border: `1px solid ${C.border}`,
+                                  borderRadius: 12,
+                                  padding: "24px 20px",
+                                  textAlign: "center",
+                                  marginTop: 16
+                                }}>
+                                  <div style={{ fontSize: 24, marginBottom: 8 }}>📋</div>
+                                  <h3 style={{ fontSize: 14, fontWeight: 700, color: "#ffffff", marginBottom: 6 }}>
+                                    No custom {termFieldName.toLowerCase()}s detected
+                                  </h3>
+                                  <p style={{ ...styles.cardText, maxWidth: 480, margin: "0 auto 16px auto", color: C.muted }}>
+                                    To map Shopify customer data directly to custom columns, please add columns (e.g. text, dates, numbers, checkboxes) inside your connected {platformName} {selectedPlatform === "clickup" ? "List settings" : selectedPlatform === "monday" ? "Board settings" : "Database properties"}.
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => window.location.reload()}
+                                    style={{
+                                      background: "rgba(255,255,255,0.06)",
+                                      border: `1px solid ${C.border}`,
+                                      color: C.text,
+                                      padding: "8px 16px",
+                                      borderRadius: 8,
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    🔄 Refresh Fields List
+                                  </button>
+                                </div>
                               ) : (
                                 <div style={{ border: `1px solid ${C.border}`, borderRadius: "12px", overflow: "hidden", background: "#151515" }}>
                                   {/* Table Header */}
