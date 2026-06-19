@@ -96,12 +96,30 @@ export const action = async ({ request }) => {
         data: { shopifyChargeStatus: "cancelled" },
       });
       logActivity(shop, "plan_cancellation_scheduled", "Subscription cancellation scheduled; active until billing cycle ends");
+    } else if (sub && sub.pendingShopifyChargeId === chargeId) {
+      await prisma.subscription.update({
+        where: { shopDomain: shop },
+        data: {
+          pendingPlanName: null,
+          pendingShopifyChargeId: null,
+        },
+      });
+      logActivity(shop, "plan_upgrade_cancelled", "Scheduled plan upgrade was cancelled before starting");
     }
   } else if (shopifyStatus === "EXPIRED" || shopifyStatus === "DECLINED") {
     if (sub && sub.shopifyChargeId === chargeId) {
       const { downgradeToFree } = await import("../billing.server");
       await downgradeToFree(shop);
       logActivity(shop, "plan_expired", `Subscription payment failed or expired (Status: ${shopifyStatus}); transitioned to Free Plan`);
+    } else if (sub && sub.pendingShopifyChargeId === chargeId) {
+      await prisma.subscription.update({
+        where: { shopDomain: shop },
+        data: {
+          pendingPlanName: null,
+          pendingShopifyChargeId: null,
+        },
+      });
+      logActivity(shop, "plan_upgrade_declined", `Scheduled plan upgrade was declined or expired (Status: ${shopifyStatus})`);
     }
   }
 
