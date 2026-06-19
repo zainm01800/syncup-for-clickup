@@ -1233,7 +1233,6 @@ export default function BillingPage() {
                       <input type="hidden" name="replacement_behavior" value={upgradeTiming} />
                       <button
                         type="submit"
-                        onClick={() => setActiveConfirmPlanKey(null)}
                         style={{
                           padding: "10px 18px",
                           borderRadius: 10,
