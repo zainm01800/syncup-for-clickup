@@ -42,6 +42,26 @@ export const loader = async ({ request }) => {
     );
 
     if (match) {
+      // Check if they are in the grace period of a cancelled paid plan
+      const durationDays = subscription.annualBilling ? 365 : 30;
+      const cycleStart = subscription.billingCycleStart || subscription.createdAt;
+      const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+      const inGracePeriod = subscription.shopifyChargeStatus === "cancelled" && 
+                            subscription.planName !== "free" && 
+                            subscription.planName !== "trial" && 
+                            new Date() <= expirationDate;
+
+      if (inGracePeriod) {
+        await prisma.subscription.update({
+          where: { shopDomain: shop },
+          data: {
+            pendingPlanName: activated,
+            pendingShopifyChargeId: match.id,
+          },
+        });
+        return redirect(`/app/billing?billing_success=1&scheduled=1&scheduled_plan=${encodeURIComponent(plan.name)}`);
+      }
+
       const getLimitForPlan = (planName) => {
         if (planName === "trial") return 5;
         const p = PLANS[planName];
@@ -82,7 +102,19 @@ export const loader = async ({ request }) => {
 
   const isTestModeActive = process.env.SHOPIFY_BILLING_TEST === "true";
 
-  return { subscription, selectedPlatform, activePaidCount, isTestModeActive };
+  // Calculate expiry date if subscription is cancelled
+  let expiryDate = null;
+  if (subscription.shopifyChargeStatus === "cancelled" && subscription.planName !== "free" && subscription.planName !== "trial") {
+    const durationDays = subscription.annualBilling ? 365 : 30;
+    const cycleStart = subscription.billingCycleStart || subscription.createdAt;
+    const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+    expiryDate = expirationDate.toISOString();
+  }
+
+  const scheduled = url.searchParams.get("scheduled") === "1";
+  const scheduledPlan = url.searchParams.get("scheduled_plan") || null;
+
+  return { subscription, selectedPlatform, activePaidCount, isTestModeActive, expiryDate, scheduled, scheduledPlan };
 };
 
 export const action = async ({ request }) => {
@@ -91,6 +123,27 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
   const planKey = formData.get("plan");
+
+  if (intent === "cancel") {
+    const subscription = await getOrCreateSubscription(shop);
+    if (subscription.shopifyChargeId) {
+      await cancelExistingSubscription(admin, subscription.shopifyChargeId);
+    }
+    await prisma.subscription.update({
+      where: { shopDomain: shop },
+      data: { shopifyChargeStatus: "cancelled" },
+    });
+    // Log activity
+    await prisma.activityLog.create({
+      data: {
+        shopDomain: shop,
+        eventType: "plan_cancellation_scheduled",
+        description: "Subscription cancellation scheduled; active until billing cycle ends",
+      },
+    }).catch(e => console.error("Failed to log activity:", e));
+
+    return redirect("/app/billing?billing_success=1");
+  }
 
   if (intent === "upgrade" && planKey) {
     if (planKey === "free") {
@@ -131,7 +184,7 @@ const C = {
 };
 
 export default function BillingPage() {
-  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive } = useLoaderData();
+  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive, expiryDate, scheduled, scheduledPlan } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -379,6 +432,24 @@ export default function BillingPage() {
         )}
 
         {/* Action Notifications */}
+        {scheduled && scheduledPlan && (
+          <div style={{
+            background: "rgba(0, 196, 140, 0.08)",
+            border: `1px solid rgba(0, 196, 140, 0.2)`,
+            color: C.accent,
+            padding: 16,
+            borderRadius: 12,
+            fontSize: 14,
+            marginBottom: 32,
+            maxWidth: 896,
+            marginLeft: "auto",
+            marginRight: "auto",
+            boxSizing: "border-box"
+          }}>
+            ✓ Your new plan <strong>{scheduledPlan}</strong> has been successfully scheduled and will activate once your current plan expires.
+          </div>
+        )}
+
         {actionData?.error && (
           <div style={{
             background: "rgba(255, 68, 68, 0.08)",
@@ -533,8 +604,20 @@ export default function BillingPage() {
               }
             }
 
-            const isDowngradeOption = key === "free" && 
-              (currentPlanKey.startsWith("standard") || currentPlanKey.startsWith("growth") || currentPlanKey.startsWith("pro"));
+            const PLAN_LEVELS = {
+              free: 0,
+              trial: 0,
+              standard_monthly: 1,
+              standard_annual: 1,
+              growth_monthly: 2,
+              growth_annual: 2,
+              pro_monthly: 3,
+              pro_annual: 3,
+            };
+
+            const currentLevel = PLAN_LEVELS[currentPlanKey] || 0;
+            const targetLevel = PLAN_LEVELS[planKey] || 0;
+            const isDowngradeOption = targetLevel < currentLevel;
 
             return (
               <div
@@ -712,7 +795,7 @@ export default function BillingPage() {
 
                 {/* Card Action */}
                 <div style={{ marginTop: "auto" }}>
-                  {isCurrent ? (
+                  {subscription.pendingPlanName === planKey ? (
                     <div style={{
                       width: "100%",
                       textAlign: "center",
@@ -720,15 +803,110 @@ export default function BillingPage() {
                       borderRadius: 12,
                       fontSize: 12,
                       fontWeight: "bold",
-                      border: `1px solid rgba(0, 196, 140, 0.2)`,
+                      border: `1px solid rgba(0, 196, 140, 0.3)`,
                       color: C.accent,
                       backgroundColor: "rgba(0, 196, 140, 0.05)",
                       cursor: "default",
                       boxSizing: "border-box",
                       display: "block",
                     }}>
-                      Current Plan
+                      Scheduled (Starts {expiryDate ? new Date(expiryDate).toLocaleDateString() : ""})
                     </div>
+                  ) : isDowngradeOption && subscription.shopifyChargeStatus !== "cancelled" ? (
+                    <div style={{
+                      width: "100%",
+                      textAlign: "center",
+                      padding: "12px 0",
+                      borderRadius: 12,
+                      fontSize: 12,
+                      fontWeight: "bold",
+                      border: `1px dashed ${C.border}`,
+                      color: C.muted,
+                      backgroundColor: "rgba(255, 255, 255, 0.02)",
+                      cursor: "not-allowed",
+                      boxSizing: "border-box",
+                    }}>
+                      {key === "free" ? "Cancel Plan to Downgrade" : `Cancel plan to switch to ${plan.name.split(" ")[0]}`}
+                    </div>
+                  ) : key === "free" && subscription.shopifyChargeStatus === "cancelled" ? (
+                    <div style={{
+                      width: "100%",
+                      textAlign: "center",
+                      padding: "12px 0",
+                      borderRadius: 12,
+                      fontSize: 12,
+                      fontWeight: "bold",
+                      border: `1px solid rgba(0, 196, 140, 0.1)`,
+                      color: C.muted,
+                      backgroundColor: "rgba(255, 255, 255, 0.01)",
+                      cursor: "default",
+                      boxSizing: "border-box",
+                    }}>
+                      Activates Automatically
+                    </div>
+                  ) : isCurrent ? (
+                    subscription.shopifyChargeStatus === "cancelled" ? (
+                      <div style={{
+                        width: "100%",
+                        textAlign: "center",
+                        padding: "12px 0",
+                        borderRadius: 12,
+                        fontSize: 12,
+                        fontWeight: "bold",
+                        border: `1px solid rgba(255, 165, 0, 0.3)`,
+                        color: "orange",
+                        backgroundColor: "rgba(255, 165, 0, 0.05)",
+                        cursor: "default",
+                        boxSizing: "border-box",
+                        display: "block",
+                      }}>
+                        Expires {expiryDate ? new Date(expiryDate).toLocaleDateString() : ""}
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{
+                          width: "100%",
+                          textAlign: "center",
+                          padding: "12px 0",
+                          borderRadius: 12,
+                          fontSize: 12,
+                          fontWeight: "bold",
+                          border: `1px solid rgba(0, 196, 140, 0.2)`,
+                          color: C.accent,
+                          backgroundColor: "rgba(0, 196, 140, 0.05)",
+                          cursor: "default",
+                          boxSizing: "border-box",
+                          display: "block",
+                        }}>
+                          Current Plan
+                        </div>
+                        {currentPlanKey !== "free" && currentPlanKey !== "trial" && (
+                          <Form method="post" style={{ margin: 0, padding: 0 }}>
+                            <input type="hidden" name="intent" value="cancel" />
+                            <button
+                              type="submit"
+                              style={{
+                                ...getButtonStyle(false),
+                                borderColor: "rgba(255, 68, 68, 0.2)",
+                                color: "#ff4444",
+                                backgroundColor: "rgba(255, 68, 68, 0.02)",
+                              }}
+                              disabled={isSubmitting}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = "rgba(255, 68, 68, 0.08)";
+                                e.currentTarget.style.borderColor = "rgba(255, 68, 68, 0.4)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = "rgba(255, 68, 68, 0.02)";
+                                e.currentTarget.style.borderColor = "rgba(255, 68, 68, 0.2)";
+                              }}
+                            >
+                              {isSubmitting ? "Cancelling..." : "Cancel Subscription"}
+                            </button>
+                          </Form>
+                        )}
+                      </div>
+                    )
                   ) : (
                     <Form method="post" style={{ margin: 0, padding: 0 }}>
                       <input type="hidden" name="intent" value="upgrade" />

@@ -53,6 +53,8 @@ model Subscription {
   twoWaySyncEnabled      Boolean   @default(true) @map("two_way_sync_enabled")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
+  pendingPlanName        String?   @map("pending_plan_name")
+  pendingShopifyChargeId String?   @map("pending_shopify_charge_id")
 
   @@map("subscriptions")
 }

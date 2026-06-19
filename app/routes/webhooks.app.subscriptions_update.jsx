@@ -71,12 +71,20 @@ export const action = async ({ request }) => {
     if (removedListNames) {
       console.log(`Plan change list limit enforcement: Removed lists: ${removedListNames}`);
     }
-  } else if (shopifyStatus === "CANCELLED" || shopifyStatus === "EXPIRED" || shopifyStatus === "DECLINED") {
+  } else if (shopifyStatus === "CANCELLED") {
     // Only pause/cancel if the charge matches the active subscription charge ID to prevent racing webhooks
+    if (sub && sub.shopifyChargeId === chargeId) {
+      await prisma.subscription.update({
+        where: { shopDomain: shop },
+        data: { shopifyChargeStatus: "cancelled" },
+      });
+      logActivity(shop, "plan_cancellation_scheduled", "Subscription cancellation scheduled; active until billing cycle ends");
+    }
+  } else if (shopifyStatus === "EXPIRED" || shopifyStatus === "DECLINED") {
     if (sub && sub.shopifyChargeId === chargeId) {
       const { downgradeToFree } = await import("../billing.server");
       await downgradeToFree(shop);
-      logActivity(shop, "plan_cancelled", `Subscription cancelled (Status: ${shopifyStatus}); transitioned to Free Plan`);
+      logActivity(shop, "plan_expired", `Subscription payment failed or expired (Status: ${shopifyStatus}); transitioned to Free Plan`);
     }
   }
 

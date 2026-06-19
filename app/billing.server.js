@@ -42,6 +42,56 @@ export async function getOrCreateSubscription(shop) {
     return sub;
   }
 
+  // Handle expired cancelled subscriptions
+  if (sub.shopifyChargeStatus === "cancelled" && sub.planName !== "free" && sub.planName !== "trial") {
+    const now = new Date();
+    const cycleStart = sub.billingCycleStart || sub.createdAt;
+    const durationDays = sub.annualBilling ? 365 : 30;
+    const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+    if (now > expirationDate) {
+      if (sub.pendingPlanName) {
+        const plan = PLANS[sub.pendingPlanName];
+        
+        // Enforce list limit downgrade for the pending plan if it's a downgrade
+        const getLimitForPlan = (planName) => {
+          if (planName === "trial") return 5;
+          const p = PLANS[planName];
+          return p ? p.listLimit : 1;
+        };
+        const currentLimit = getLimitForPlan(sub.planName);
+        const newLimit = getLimitForPlan(sub.pendingPlanName);
+
+        if (newLimit < currentLimit) {
+          try {
+            const { handleDowngradeToListLimit } = await import("./clickup.server");
+            await handleDowngradeToListLimit(shop, newLimit);
+          } catch (e) {
+            console.error("Failed to trim lists on pending plan activation:", e);
+          }
+        }
+
+        sub = await prisma.subscription.update({
+          where: { shopDomain: shop },
+          data: {
+            planName: sub.pendingPlanName,
+            shopifyChargeId: sub.pendingShopifyChargeId,
+            shopifyChargeStatus: "active",
+            status: "active",
+            billingCycleStart: now,
+            annualBilling: plan.annual,
+            pendingPlanName: null,
+            pendingShopifyChargeId: null,
+            ordersSyncedThisMonth: 0,
+          },
+        });
+        await logActivity(shop, "plan_activated", `Scheduled plan "${plan.name}" is now active`);
+      } else {
+        sub = await downgradeToFree(shop);
+        await logActivity(shop, "plan_expired", "Grace period ended; transitioned to Free Plan");
+      }
+    }
+  }
+
   // Handle monthly resetting of sync count for active subscriptions
   if (sub.billingCycleStart && isNewMonth(sub.billingCycleStart)) {
     sub = await prisma.subscription.update({
@@ -116,6 +166,20 @@ export function isSubscriptionActive(subscription) {
 
 export function getTrialBannerStatus(subscription) {
   if (!subscription) return null;
+
+  if (subscription.shopifyChargeStatus === "cancelled" && subscription.planName !== "free" && subscription.planName !== "trial") {
+    const now = new Date();
+    const cycleStart = subscription.billingCycleStart || subscription.createdAt;
+    const durationDays = subscription.annualBilling ? 365 : 30;
+    const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
+    const msRemaining = expirationDate.getTime() - now.getTime();
+    const daysRemaining = Math.max(0, Math.ceil(msRemaining / (1000 * 60 * 60 * 24)));
+    return {
+      expired: false,
+      color: "orange",
+      message: `Your subscription is cancelled and will expire in ${daysRemaining} day${daysRemaining === 1 ? "" : "s"} on ${expirationDate.toLocaleDateString()}.`,
+    };
+  }
 
   if (subscription.planName === "free") {
     const plan = PLANS.free;

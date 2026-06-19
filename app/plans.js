@@ -121,6 +121,17 @@ export const PLANS = {
   },
 };
 
+export const PLAN_LEVELS = {
+  free: 0,
+  trial: 0,
+  standard_monthly: 1,
+  standard_annual: 1,
+  growth_monthly: 2,
+  growth_annual: 2,
+  pro_monthly: 3,
+  pro_annual: 3,
+};
+
 export function getTranslatedFeatures(features, platform = "clickup") {
   if (!platform) platform = "clickup";
   const p = platform.toLowerCase();
