@@ -364,7 +364,7 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  const { getConnection, disconnect, logActivity, saveListConnections } = await import("../clickup.server");
+  const { getConnection, disconnect, logActivity, saveListConnections, generateWebhookSecret } = await import("../clickup.server");
 
   if (intent === "join_waitlist") {
     const platform = formData.get("platform");
@@ -487,7 +487,9 @@ export const action = async ({ request }) => {
         }
       }
 
-      // Upsert new connection
+      // Upsert new connection — mint a fresh webhook secret on every connect so
+      // the inbound completion webhook URL is rotated with the new token.
+      const webhookSecret = generateWebhookSecret();
       const conn = await prisma.platformConnection.upsert({
         where: {
           shopDomain_provider: {
@@ -497,13 +499,15 @@ export const action = async ({ request }) => {
         },
         update: {
           encryptedAccessToken: encryptedToken,
-          isActive: true
+          isActive: true,
+          webhookSecret
         },
         create: {
           shopDomain: shop,
           provider: platform.toUpperCase(),
           encryptedAccessToken: encryptedToken,
-          isActive: true
+          isActive: true,
+          webhookSecret
         }
       });
 
@@ -543,17 +547,24 @@ export const action = async ({ request }) => {
       if (parsed.length > 100) {
         return { ok: false, error: "You cannot map more than 100 fields." };
       }
-      for (const m of parsed) {
-        if (!m.clickupFieldId || !m.shopifySourceField) {
-          return { ok: false, error: "Invalid mapping configuration." };
-        }
-      }
 
       const activeConn = await prisma.platformConnection.findFirst({
         where: { shopDomain: shop, isActive: true }
       });
       if (!activeConn) {
         return { ok: false, error: "No active connection found." };
+      }
+
+      // Require the target-field key that the adapter actually reads for this
+      // provider, so mappings don't silently fall through to a wrong column.
+      const targetFieldKey =
+        activeConn.provider === "MONDAY" ? "mondayColumnId"
+        : activeConn.provider === "NOTION" ? "notionPropertyId"
+        : "clickupFieldId";
+      for (const m of parsed) {
+        if (!m[targetFieldKey] || !m.shopifySourceField) {
+          return { ok: false, error: "Invalid mapping configuration." };
+        }
       }
 
       if (activeConn.provider === "CLICKUP") {
@@ -1905,10 +1916,16 @@ export default function Index() {
                           </h2>
                           
                           <p style={styles.cardText}>
-                            {selectedTool === "monday" 
-                              ? "Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration > API." 
+                            {selectedTool === "monday"
+                              ? "Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration > API."
                               : "Enter your Notion Integration Token to connect your account. You can create an integration token at developers.notion.com/my-integrations."}
                           </p>
+
+                          {selectedTool === "notion" && (
+                            <div style={{ ...styles.errorBanner, background: "rgba(150,150,150,0.08)", color: "#cfcfcc", marginTop: 12 }}>
+                              Note: Notion sync is one-way. Orders are sent to Notion, but completing a Notion page will not auto-fulfill the Shopify order.
+                            </div>
+                          )}
 
                           {actionData?.error && (
                             <div style={{ ...styles.errorBanner, marginTop: 12, marginBottom: 12 }}>
@@ -2996,20 +3013,25 @@ export default function Index() {
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
                                 Mark task complete when order ships <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." />
-                                {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
+                                {selectedPlatform !== "notion" && !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
+                                )}
+                                {selectedPlatform === "notion" && (
+                                  <span style={{ fontSize: 9, background: "rgba(150,150,150,0.12)", color: "#9a9a9a", border: "1px solid rgba(150,150,150,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>One-way</span>
                                 )}
                               </div>
                               <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
-                                Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday.
+                                {selectedPlatform === "notion"
+                                  ? "Notion sync is one-way: orders are sent to Notion, but marking a Notion page complete will NOT auto-fulfill the Shopify order (Notion has no change webhooks)."
+                                  : "Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday."}
                               </div>
                             </div>
-                            <input type="hidden" name="twoWaySyncEnabled" value={String(localTwoWaySync)} />
+                            <input type="hidden" name="twoWaySyncEnabled" value={String(selectedPlatform === "notion" ? false : localTwoWaySync)} />
                             <button
                               type="button"
                               role="switch"
                               aria-checked={localTwoWaySync}
-                              disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                              disabled={selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
                               onClick={() => {
                                 if (!localTwoWaySync) {
                                   const confirm = window.confirm(
@@ -3025,12 +3047,12 @@ export default function Index() {
                                 borderRadius: 12,
                                 background: localTwoWaySync ? "#00c48c" : "#2a2a2a",
                                 border: "none",
-                                cursor: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? "not-allowed" : "pointer",
+                                cursor: (selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")) ? "not-allowed" : "pointer",
                                 position: "relative",
                                 flexShrink: 0,
                                 transition: "background 0.2s ease",
                                 outline: "none",
-                                opacity: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? 0.5 : 1
+                                opacity: (selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")) ? 0.5 : 1
                               }}
                             >
                               <span style={{

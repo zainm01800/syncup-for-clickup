@@ -34,7 +34,7 @@ model Session {
 // Tracks the billing plan and monthly order usage for each shop.
 model Subscription {
   shopDomain             String    @id @map("shop_domain")
-  planName               String    @default("trial") @map("plan_name") // trial, starter_monthly, starter_annual, growth_monthly, growth_annual, expired, cancelled
+  planName               String    @default("trial") @map("plan_name") // trial, free, standard_monthly, standard_annual, growth_monthly, growth_annual, pro_monthly, pro_annual, expired, cancelled
   shopifyChargeId        String?   @map("shopify_charge_id")
   shopifyChargeStatus    String?   @map("shopify_charge_status")
   trialStartDate         DateTime  @default(now()) @map("trial_start_date")
@@ -102,6 +102,11 @@ model PlatformConnection {
   provider             IntegrationProvider
   isActive             Boolean             @default(true) @map("is_active")
   encryptedAccessToken String              @map("encrypted_access_token")
+  // Per-connection secret embedded in the inbound webhook URL (?token=) so we can
+  // authenticate ClickUp/Monday completion callbacks. See api.webhooks.clickup/monday.
+  // Nullable so the column can be added over existing rows; NULL = not yet secured
+  // (inbound webhooks 401 until the merchant reconnects, which mints a secret).
+  webhookSecret        String?             @unique @map("webhook_secret")
   healthStatus         String              @default("healthy") @map("health_status") // healthy | degraded | error
   lastHealthCheck      DateTime?           @map("last_health_check")
   createdAt            DateTime            @default(now()) @map("created_at")

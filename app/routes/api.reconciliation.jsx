@@ -164,7 +164,10 @@ async function reconcileShopStorefront(shopDomain) {
       select: { shopifyOrderId: true }
     }),
     prisma.syncJob.findMany({
-      where: { shopDomain, shopifyOrderId: { in: orderIds } },
+      // Only in-flight jobs suppress re-enqueueing. Terminal/completed rows are
+      // not created anymore (skipped jobs are deleted), but filtering here is
+      // belt-and-suspenders so a stale row can't hide a dropped order.
+      where: { shopDomain, shopifyOrderId: { in: orderIds }, status: { in: ["pending", "processing", "failed"] } },
       select: { shopifyOrderId: true }
     })
   ]);

@@ -424,7 +424,6 @@ async function handleJobProcess(request) {
     { default: prisma },
     {
       getConnection,
-      getAllConnections,
       fetchShopifyCustomer,
       logActivity,
       compileMarkdownTable,
@@ -488,31 +487,24 @@ async function handleJobProcess(request) {
       // Check sync trigger setting
       const syncTrigger = subscription.syncTrigger || "payment_confirmed";
       if (syncTrigger === "payment_confirmed" && payload.financial_status !== "paid") {
-        await prisma.syncJob.update({
-          where: { id: job.id },
-          data: { status: "completed" }
-        });
+        // Delete (don't keep) — the order isn't ready yet. The orders/updated
+        // webhook (or reconciliation) re-enqueues it once it becomes paid. Keeping
+        // a row would retain customer PII and poison reconciliation's dedup.
+        await prisma.syncJob.delete({ where: { id: job.id } });
         results.push({ jobId: job.id, success: true, skipped: true, reason: "trigger:not_paid" });
         continue;
       }
       if (syncTrigger === "on_fulfillment_start" && !payload.fulfillment_status) {
-        await prisma.syncJob.update({
-          where: { id: job.id },
-          data: { status: "completed" }
-        });
+        await prisma.syncJob.delete({ where: { id: job.id } });
         results.push({ jobId: job.id, success: true, skipped: true, reason: "trigger:not_fulfilling" });
         continue;
       }
 
-      // Determine active connections to process based on Pro tier allowance
-      const isPro = subscription.planName.startsWith("pro");
-      let activeConnections = [];
-      if (isPro) {
-        activeConnections = await getAllConnections(shopDomain);
-      } else {
-        const conn = await getConnection(shopDomain);
-        activeConnections = conn ? [conn] : [];
-      }
+      // The dashboard enforces a single active provider per shop, so every tier
+      // syncs through that one connection. (Pro's "unlimited connections" refers
+      // to list/board targets via SyncTarget, not multiple providers at once.)
+      const conn = await getConnection(shopDomain);
+      const activeConnections = conn ? [conn] : [];
 
       if (activeConnections.length === 0) {
         throw new Error(`No active platform connections configured for ${shopDomain}`);

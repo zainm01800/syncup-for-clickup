@@ -1,5 +1,44 @@
 import prisma from "./db.server";
 import { encryptToken, decryptToken } from "./crypto.server";
+import { randomBytes } from "node:crypto";
+
+/** Cryptographically-random per-connection secret embedded in inbound webhook URLs. */
+export function generateWebhookSecret() {
+  return randomBytes(24).toString("hex");
+}
+
+/**
+ * Ensures a PlatformConnection has a webhookSecret, minting + persisting one if
+ * missing (legacy rows predating inbound-webhook auth have NULL). Returns the secret.
+ */
+export async function ensureWebhookSecret(connectionId) {
+  const conn = await prisma.platformConnection.findUnique({
+    where: { id: connectionId },
+    select: { webhookSecret: true },
+  });
+  if (conn?.webhookSecret) return conn.webhookSecret;
+
+  const secret = generateWebhookSecret();
+  await prisma.platformConnection.update({
+    where: { id: connectionId },
+    data: { webhookSecret: secret },
+  });
+  return secret;
+}
+
+/**
+ * Looks up the active PlatformConnection whose webhookSecret matches `token` for a
+ * given provider. Used to authenticate inbound ClickUp/Monday completion callbacks.
+ * Returns null on any mismatch so callers can respond 401.
+ */
+export async function findConnectionByWebhookSecret(token, provider) {
+  if (!token) return null;
+  const conn = await prisma.platformConnection.findFirst({
+    where: { webhookSecret: token, isActive: true, provider },
+    select: { id: true, shopDomain: true, provider: true },
+  });
+  return conn || null;
+}
 
 
 // Fallback used only when the orders/create webhook payload arrives without a
@@ -294,6 +333,10 @@ export async function getAllConnections(shop) {
 export async function saveToken(shop, accessToken, workspaceName = null, isFreePlan = false) {
   const encryptedToken = await encryptToken(accessToken);
 
+  // Mint a fresh webhook secret on every connect/reconnect so the inbound
+  // ClickUp completion webhook URL is rotated with the new connection.
+  const webhookSecret = generateWebhookSecret();
+
   const conn = await prisma.platformConnection.upsert({
     where: {
       shopDomain_provider: {
@@ -303,13 +346,15 @@ export async function saveToken(shop, accessToken, workspaceName = null, isFreeP
     },
     update: {
       encryptedAccessToken: encryptedToken,
-      isActive: true
+      isActive: true,
+      webhookSecret
     },
     create: {
       shopDomain: shop,
       provider: "CLICKUP",
       encryptedAccessToken: encryptedToken,
-      isActive: true
+      isActive: true,
+      webhookSecret
     }
   });
 
@@ -382,15 +427,17 @@ export async function saveListConnections(shop, listConnections) {
 
   if (activeConn.provider === "CLICKUP") {
     try {
-      await registerClickUpWebhook(shop, decryptedToken);
+      const webhookSecret = await ensureWebhookSecret(activeConn.id);
+      await registerClickUpWebhook(shop, decryptedToken, webhookSecret);
     } catch (err) {
       console.error("Failed to register ClickUp webhook on connection save:", err);
     }
   } else if (activeConn.provider === "MONDAY") {
+    const webhookSecret = await ensureWebhookSecret(activeConn.id);
     for (const target of listConnections) {
       if (target.id) {
         try {
-          await registerMondayWebhook(target.id, decryptedToken);
+          await registerMondayWebhook(target.id, decryptedToken, webhookSecret);
         } catch (err) {
           console.error(`Failed to register Monday webhook on board ${target.id} on save:`, err);
         }
@@ -639,14 +686,15 @@ export async function uploadTaskAttachment(token, taskId, fileUrl, filename) {
   return res.json();
 }
 
-export async function registerClickUpWebhook(shop, token) {
+export async function registerClickUpWebhook(shop, token, webhookSecret) {
   try {
     const teams = await getTeams(token);
     if (!teams || teams.length === 0) return null;
     const teamId = teams[0].id;
-    
+
     const appUrl = process.env.SHOPIFY_APP_URL || "https://syncup-for-clickup.vercel.app";
-    const endpointUrl = `${appUrl}/api/webhooks/clickup`;
+    // Embed the per-connection secret so the inbound callback can be authenticated.
+    const endpointUrl = `${appUrl}/api/webhooks/clickup?token=${encodeURIComponent(webhookSecret || "")}`;
     
     // Check if webhook already exists for this team to avoid duplicates
     let existingWebhooks = [];
@@ -679,10 +727,11 @@ export async function registerClickUpWebhook(shop, token) {
   }
 }
 
-export async function registerMondayWebhook(boardId, token) {
+export async function registerMondayWebhook(boardId, token, webhookSecret) {
   try {
     const appUrl = process.env.SHOPIFY_APP_URL || "https://syncup-for-clickup.vercel.app";
-    const endpointUrl = `${appUrl}/api/webhooks/monday`;
+    // Embed the per-connection secret so the inbound callback can be authenticated.
+    const endpointUrl = `${appUrl}/api/webhooks/monday?token=${encodeURIComponent(webhookSecret || "")}`;
     
     const query = `
       mutation create_webhook($boardId: ID!, $url: String!) {

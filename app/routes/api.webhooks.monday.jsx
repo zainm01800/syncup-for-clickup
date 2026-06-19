@@ -1,15 +1,23 @@
 const json = Response.json;
 import prisma from "../db.server";
-import { logActivity } from "../clickup.server";
+import { logActivity, findConnectionByWebhookSecret } from "../clickup.server";
 
 export const action = async ({ request }) => {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
+  // Authenticate the callback via the per-connection secret embedded in the URL.
+  // Monday POSTs (including the verification challenge) to the exact registered
+  // endpoint, which includes ?token=<secret>.
+  const token = new URL(request.url).searchParams.get("token");
+  const connection = await findConnectionByWebhookSecret(token, "MONDAY");
+  if (!connection) {
+    return json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const payload = await request.json();
-    console.log("Received Monday.com webhook payload:", JSON.stringify(payload));
 
     // 1. Monday.com Webhook URL verification handshake
     if (payload.challenge) {
@@ -45,9 +53,10 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: `Status '${newStatusLabel}' is not a fulfillment trigger` });
     }
 
-    // Look up OrderSyncRecord
+    // Look up OrderSyncRecord, scoped to the authenticated connection's shop so a
+    // secret can't be used against another shop's records.
     const record = await prisma.orderSyncRecord.findFirst({
-      where: { targetRecordId: pulseId }
+      where: { targetRecordId: pulseId, shopDomain: connection.shopDomain }
     });
 
     if (!record) {

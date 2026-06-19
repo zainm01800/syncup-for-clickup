@@ -1,15 +1,22 @@
 const json = Response.json;
 import prisma from "../db.server";
-import { logActivity } from "../clickup.server";
+import { logActivity, findConnectionByWebhookSecret } from "../clickup.server";
 
 export const action = async ({ request }) => {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
+  // Authenticate the callback via the per-connection secret embedded in the URL.
+  // ClickUp POSTs to the exact registered endpoint, which includes ?token=<secret>.
+  const token = new URL(request.url).searchParams.get("token");
+  const connection = await findConnectionByWebhookSecret(token, "CLICKUP");
+  if (!connection) {
+    return json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const payload = await request.json();
-    console.log("Received ClickUp webhook payload:", JSON.stringify(payload));
 
     const taskId = payload.task_id;
     if (!taskId) {
@@ -30,9 +37,10 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: `Status '${afterStatus}' is not a fulfillment trigger` });
     }
 
-    // Look up OrderSyncRecord
+    // Look up OrderSyncRecord, scoped to the authenticated connection's shop so a
+    // secret can't be used against another shop's records.
     const record = await prisma.orderSyncRecord.findFirst({
-      where: { targetRecordId: taskId }
+      where: { targetRecordId: taskId, shopDomain: connection.shopDomain }
     });
 
     if (!record) {
