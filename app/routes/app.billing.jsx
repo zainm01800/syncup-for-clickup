@@ -190,6 +190,34 @@ export const action = async ({ request }) => {
     return redirect("/app/billing?billing_success=1");
   }
 
+  if (intent === "cancel_scheduled") {
+    const subscription = await getOrCreateSubscription(shop);
+    if (subscription.pendingShopifyChargeId) {
+      try {
+        await cancelExistingSubscription(admin, subscription.pendingShopifyChargeId);
+      } catch (e) {
+        console.error("Failed to cancel pending subscription on Shopify:", e);
+      }
+    }
+    await prisma.subscription.update({
+      where: { shopDomain: shop },
+      data: {
+        pendingPlanName: null,
+        pendingShopifyChargeId: null,
+      },
+    });
+    // Log activity
+    await prisma.activityLog.create({
+      data: {
+        shopDomain: shop,
+        eventType: "plan_upgrade_cancelled",
+        description: "Scheduled plan upgrade was cancelled",
+      },
+    }).catch(e => console.error("Failed to log activity:", e));
+
+    return redirect("/app/billing?billing_success=1");
+  }
+
   if (intent === "upgrade" && planKey) {
     const replacementBehavior = formData.get("replacement_behavior") || "APPLY_IMMEDIATELY";
 
@@ -518,6 +546,73 @@ export default function BillingPage() {
             boxSizing: "border-box"
           }}>
             ✓ Your new plan <strong>{scheduledPlan}</strong> has been successfully scheduled and will activate once your current plan expires.
+          </div>
+        )}
+
+        {subscription.pendingPlanName && (
+          <div style={{
+            background: "rgba(0, 196, 140, 0.05)",
+            border: `1px solid rgba(0, 196, 140, 0.2)`,
+            color: C.text,
+            padding: 16,
+            borderRadius: 12,
+            fontSize: 14,
+            marginBottom: 32,
+            maxWidth: 896,
+            marginLeft: "auto",
+            marginRight: "auto",
+            boxSizing: "border-box",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 12,
+          }}>
+            <div>
+              📅 You have a scheduled upgrade to <strong>{PLANS[subscription.pendingPlanName]?.name || subscription.pendingPlanName}</strong> starting on <strong>{scheduledStartDate ? new Date(scheduledStartDate).toLocaleDateString() : ""}</strong>.
+            </div>
+            <div style={{ display: "flex", gap: 12 }}>
+              <Form method="post" style={{ margin: 0, padding: 0 }}>
+                <input type="hidden" name="intent" value="cancel_scheduled" />
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  style={{
+                    backgroundColor: "transparent",
+                    color: "#ff4444",
+                    border: "1px solid rgba(255, 68, 68, 0.3)",
+                    padding: "6px 12px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: "bold",
+                    cursor: isSubmitting ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {isSubmitting ? "Cancelling..." : "Cancel Scheduled Upgrade"}
+                </button>
+              </Form>
+              <Form method="post" style={{ margin: 0, padding: 0 }}>
+                <input type="hidden" name="intent" value="upgrade" />
+                <input type="hidden" name="plan" value={subscription.pendingPlanName} />
+                <input type="hidden" name="replacement_behavior" value="APPLY_IMMEDIATELY" />
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  style={{
+                    backgroundColor: C.accent,
+                    color: "#03251c",
+                    border: "none",
+                    padding: "6px 12px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: "bold",
+                    cursor: isSubmitting ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {isSubmitting ? "Activating..." : "Activate Now"}
+                </button>
+              </Form>
+            </div>
           </div>
         )}
 
@@ -867,21 +962,73 @@ export default function BillingPage() {
                 {/* Card Action */}
                 <div style={{ marginTop: "auto" }}>
                   {subscription.pendingPlanName === planKey ? (
-                    <div style={{
-                      width: "100%",
-                      textAlign: "center",
-                      padding: "12px 0",
-                      borderRadius: 12,
-                      fontSize: 12,
-                      fontWeight: "bold",
-                      border: `1px solid rgba(0, 196, 140, 0.3)`,
-                      color: C.accent,
-                      backgroundColor: "rgba(0, 196, 140, 0.05)",
-                      cursor: "default",
-                      boxSizing: "border-box",
-                      display: "block",
-                    }}>
-                      Scheduled (Starts {scheduledStartDate ? new Date(scheduledStartDate).toLocaleDateString() : (expiryDate ? new Date(expiryDate).toLocaleDateString() : "")})
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+                      <div style={{
+                        width: "100%",
+                        textAlign: "center",
+                        padding: "12px 0",
+                        borderRadius: 12,
+                        fontSize: 12,
+                        fontWeight: "bold",
+                        border: `1px solid rgba(0, 196, 140, 0.3)`,
+                        color: C.accent,
+                        backgroundColor: "rgba(0, 196, 140, 0.05)",
+                        cursor: "default",
+                        boxSizing: "border-box",
+                        display: "block",
+                      }}>
+                        Scheduled (Starts {scheduledStartDate ? new Date(scheduledStartDate).toLocaleDateString() : (expiryDate ? new Date(expiryDate).toLocaleDateString() : "")})
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Form method="post" style={{ margin: 0, padding: 0, flex: 1 }}>
+                          <input type="hidden" name="intent" value="cancel_scheduled" />
+                          <button
+                            type="submit"
+                            disabled={isSubmitting}
+                            style={{
+                              width: "100%",
+                              padding: "8px 0",
+                              borderRadius: 8,
+                              fontSize: 10,
+                              fontWeight: "bold",
+                              backgroundColor: "transparent",
+                              color: "#ff4444",
+                              border: "1px solid rgba(255, 68, 68, 0.3)",
+                              cursor: isSubmitting ? "not-allowed" : "pointer",
+                              transition: "background-color 0.2s ease",
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "rgba(255, 68, 68, 0.05)"}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                          >
+                            Cancel
+                          </button>
+                        </Form>
+                        <Form method="post" style={{ margin: 0, padding: 0, flex: 1 }}>
+                          <input type="hidden" name="intent" value="upgrade" />
+                          <input type="hidden" name="plan" value={planKey} />
+                          <input type="hidden" name="replacement_behavior" value="APPLY_IMMEDIATELY" />
+                          <button
+                            type="submit"
+                            disabled={isSubmitting}
+                            style={{
+                              width: "100%",
+                              padding: "8px 0",
+                              borderRadius: 8,
+                              fontSize: 10,
+                              fontWeight: "bold",
+                              backgroundColor: C.accent,
+                              color: "#03251c",
+                              border: "none",
+                              cursor: isSubmitting ? "not-allowed" : "pointer",
+                              transition: "opacity 0.2s ease",
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = "0.9"}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                          >
+                            Start Now
+                          </button>
+                        </Form>
+                      </div>
                     </div>
                   ) : isDowngradeOption && subscription.shopifyChargeStatus !== "cancelled" ? (
                     <div style={{
@@ -1162,6 +1309,20 @@ export default function BillingPage() {
               const isCurrentPaid = currentPlanKey !== "free" && currentPlanKey !== "trial" && subscription.shopifyChargeStatus === "active";
               const showUpgradeTimingChoice = isCurrentPaid && isUpgrade;
 
+              const getPlanPrice = (planKey) => {
+                const plan = PLANS[planKey];
+                if (!plan) return 0;
+                if (isPromoActive) {
+                  return plan.price;
+                }
+                return plan.regularPrice || plan.price;
+              };
+
+              const currentPrice = getPlanPrice(currentPlanKey);
+              const targetPrice = getPlanPrice(activeConfirmPlanKey);
+              const diffPrice = targetPrice - currentPrice;
+              const intervalText = targetPlan?.interval === "ANNUAL" ? "yr" : "mo";
+
               return (
                 <>
                   <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 12px 0", color: C.text }}>
@@ -1199,7 +1360,7 @@ export default function BillingPage() {
                             </span>
                           </div>
                           <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
-                            Shopify will charge you the difference immediately. A prorated credit for the unused time of your current plan will be applied.
+                            Shopify will charge you the difference immediately. A prorated credit for the unused time of your current plan will be applied. (The price difference is <strong style={{ color: C.text }}>${diffPrice.toFixed(2)}/{intervalText}</strong>).
                           </div>
                         </label>
 
@@ -1227,7 +1388,7 @@ export default function BillingPage() {
                             </span>
                           </div>
                            <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
-                             Keep your current plan active for now. The <strong style={{ color: C.text }}>{targetPlan?.name?.split(" ")[0] || "new"} plan</strong> will start automatically on your next billing cycle: <strong>{expiryString}</strong>.
+                             Keep your current plan active for now. The <strong style={{ color: C.text }}>{targetPlan?.name?.split(" ")[0] || "new"} plan</strong> will start automatically on your next billing cycle: <strong>{expiryString}</strong> at <strong style={{ color: C.text }}>${targetPrice.toFixed(2)}/{intervalText}</strong>.
                            </div>
                         </label>
                       </div>
@@ -1235,8 +1396,8 @@ export default function BillingPage() {
                   ) : (
                     <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 24px 0" }}>
                       {subscription.shopifyChargeStatus === "cancelled"
-                        ? `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts.`
-                        : `You are switching to the ${targetPlan?.name || activeConfirmPlanKey}. This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`
+                        ? `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts (Price: $${targetPrice.toFixed(2)}/${intervalText}).`
+                        : `You are switching to the ${targetPlan?.name || activeConfirmPlanKey} ($${targetPrice.toFixed(2)}/${intervalText}). This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`
                       }
                     </p>
                   )}
