@@ -290,7 +290,7 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
     chargedPrice = plan.regularPrice || plan.price;
   }
 
-  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?activated=${planKey}&replacement_behavior=${replacementBehavior}`;
+  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?shop=${encodeURIComponent(shop)}&activated=${planKey}&replacement_behavior=${replacementBehavior}`;
   const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
   const res = await admin.graphql(
@@ -335,7 +335,7 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
         ],
         returnUrl,
         // Use real charges in production. Set SHOPIFY_BILLING_TEST=true in .env for local sandbox testing.
-        test: process.env.SHOPIFY_BILLING_TEST === "true",
+        test: process.env.SHOPIFY_BILLING_TEST === "true" || shop === "syncup-test-store.myshopify.com",
         replacementBehavior: replacementBehavior,
       },
     }

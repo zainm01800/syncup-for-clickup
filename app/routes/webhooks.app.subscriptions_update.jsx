@@ -38,6 +38,21 @@ export const action = async ({ request }) => {
 
     const plan = PLANS[planKey];
 
+    // If this matches a pending scheduled upgrade (APPLY_ON_NEXT_BILLING_CYCLE),
+    // keep the current planName and store the new one as pending — don't switch yet.
+    if (sub && sub.pendingPlanName === planKey) {
+      await prisma.subscription.update({
+        where: { shopDomain: shop },
+        data: {
+          pendingShopifyChargeId: chargeId,
+          // Keep planName unchanged — the new plan will become active when the
+          // current billing cycle ends and Shopify cancels the old subscription.
+        },
+      });
+      logActivity(shop, "plan_upgrade_scheduled", `Plan "${plan.name}" scheduled to activate on next billing cycle`);
+      return new Response();
+    }
+
     await prisma.subscription.upsert({
       where: { shopDomain: shop },
       update: {
@@ -48,6 +63,8 @@ export const action = async ({ request }) => {
         status: "active",
         billingCycleStart: new Date(),
         annualBilling: plan.annual,
+        pendingPlanName: null,
+        pendingShopifyChargeId: null,
       },
       create: {
         shopDomain: shop,

@@ -204,6 +204,17 @@ export const action = async ({ request }) => {
       // DO NOT cancel the old subscription for paid plan upgrades/downgrades.
       // Shopify handles this automatically, supporting proration and scheduling.
       try {
+        // For deferred upgrades: pre-set pendingPlanName in the DB NOW (before
+        // the merchant approves on Shopify). This allows the subscriptions_update
+        // webhook to correctly identify the incoming ACTIVE event as a scheduled
+        // upgrade rather than an immediate switch, and leave planName unchanged.
+        if (replacementBehavior === "APPLY_ON_NEXT_BILLING_CYCLE") {
+          await prisma.subscription.updateMany({
+            where: { shopDomain: shop },
+            data: { pendingPlanName: planKey },
+          });
+        }
+
         const { confirmationUrl } = await createShopifySubscription(
           admin,
           shop,
@@ -212,6 +223,13 @@ export const action = async ({ request }) => {
         );
         return { confirmationUrl };
       } catch (err) {
+        // Roll back the pending plan if subscription creation failed
+        if (replacementBehavior === "APPLY_ON_NEXT_BILLING_CYCLE") {
+          await prisma.subscription.updateMany({
+            where: { shopDomain: shop },
+            data: { pendingPlanName: null },
+          }).catch(() => {});
+        }
         return { error: err.message };
       }
     }
@@ -1208,9 +1226,9 @@ export default function BillingPage() {
                               Upgrade next month
                             </span>
                           </div>
-                          <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
-                            Keep your current plan active for now. The Pro plan will start automatically on your next billing cycle: <strong>{expiryString}</strong>.
-                          </div>
+                           <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
+                             Keep your current plan active for now. The <strong style={{ color: C.text }}>{targetPlan?.name?.split(" ")[0] || "new"} plan</strong> will start automatically on your next billing cycle: <strong>{expiryString}</strong>.
+                           </div>
                         </label>
                       </div>
                     </div>
