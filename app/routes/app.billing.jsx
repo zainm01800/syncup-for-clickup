@@ -1127,9 +1127,23 @@ export default function BillingPage() {
               const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
               const expiryString = expirationDate.toLocaleDateString();
 
+              const PLAN_LEVELS = {
+                free: 0,
+                trial: 0,
+                standard_monthly: 1,
+                standard_annual: 1,
+                growth_monthly: 2,
+                growth_annual: 2,
+                pro_monthly: 3,
+                pro_annual: 3,
+              };
+              const currentLevel = PLAN_LEVELS[currentPlanKey] || 0;
+              const targetLevel = PLAN_LEVELS[activeConfirmPlanKey] || 0;
+              const isUpgrade = targetLevel > currentLevel;
+
               const isCurrentPaid = currentPlanKey !== "free" && currentPlanKey !== "trial" && subscription.shopifyChargeStatus === "active";
               const isTargetPro = activeConfirmPlanKey === "pro_monthly" || activeConfirmPlanKey === "pro_annual";
-              const showProUpgradeTimingChoice = isCurrentPaid && isTargetPro;
+              const showProUpgradeTimingChoice = isCurrentPaid && isTargetPro && isUpgrade;
 
               return (
                 <>
