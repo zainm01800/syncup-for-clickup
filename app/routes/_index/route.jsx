@@ -45,7 +45,7 @@ export default function App() {
         
         <h2 className={styles.title}>Automate your Shopify workflows directly in ClickUp</h2>
         <p className={styles.text}>
-          Connect your store in seconds. Automatically create tasks for new orders in ClickUp, and mark them complete when fulfilled.
+          Connect your store in seconds. Automatically create tasks for new orders in ClickUp, and mark them complete when fulfilled. (Monday.com and Notion integrations coming soon!)
         </p>
 
         {showForm && (
