@@ -455,6 +455,9 @@ export const action = async ({ request }) => {
   if (intent === "connect_platform") {
     const platform = formData.get("platform");
     const token = formData.get("token");
+    if (platform === "monday" || platform === "notion") {
+      return { ok: false, error: `${platform === "monday" ? "Monday.com" : "Notion"} integration is coming soon.` };
+    }
     if (!token) {
       return { ok: false, error: "API token is required." };
     }
@@ -965,6 +968,8 @@ export default function Index() {
   } = useLoaderData();
 
   const actionData = useActionData();
+  const currentPlan = PLANS[subscription.planName];
+  const orderLimit = currentPlan ? currentPlan.monthlyOrderLimit : (subscription.planName === "trial" ? null : 5);
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
@@ -1012,6 +1017,7 @@ export default function Index() {
   const [fieldMappingsList, setFieldMappingsList] = useState(fieldMappings || []);
   const [activeTab, setActiveTab] = useState("connections"); // connections, mappings, settings
   const [selectedTool, setSelectedTool] = useState(null);
+  const [comingSoonPlatform, setComingSoonPlatform] = useState(null);
   const [localTaskTemplate, setLocalTaskTemplate] = useState(taskNameTemplate || "");
   const [localTaskDescriptionTemplate, setLocalTaskDescriptionTemplate] = useState(taskDescriptionTemplate || "");
 
@@ -1655,12 +1661,40 @@ export default function Index() {
                         Select the project management platform you want to sync your Shopify orders to.
                       </p>
 
+                      {comingSoonPlatform && (
+                        <div style={{ ...styles.warningBanner, marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div style={{ flex: 1, paddingRight: 8 }}>
+                            ⚠️ <strong>{comingSoonPlatform}</strong> integration is coming soon! For now, please connect ClickUp to start syncing your Shopify orders.
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setComingSoonPlatform(null)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              color: "inherit",
+                              cursor: "pointer",
+                              fontSize: 16,
+                              fontWeight: "bold",
+                              padding: "0 4px",
+                              lineHeight: 1,
+                              opacity: 0.6,
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                            onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.6")}
+                          >
+                            &times;
+                          </button>
+                        </div>
+                      )}
+
                       <div className="su-platform-grid">
                         {/* ClickUp */}
                         <button
                           type="button"
                           className="su-platform-card clickup"
                           onClick={() => {
+                            setComingSoonPlatform(null);
                             setSelectedTool("clickup");
                             setWizardStep("connect");
                           }}
@@ -1683,8 +1717,7 @@ export default function Index() {
                           type="button"
                           className="su-platform-card monday"
                           onClick={() => {
-                            setSelectedTool("monday");
-                            setWizardStep("connect");
+                            setComingSoonPlatform("Monday.com");
                           }}
                           style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
                         >
@@ -1698,7 +1731,7 @@ export default function Index() {
                             </div>
                             <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Monday.com</span>
                           </div>
-                          <span className="su-platform-badge coming-soon">Beta</span>
+                          <span className="su-platform-badge coming-soon">Coming Soon</span>
                         </button>
 
                         {/* Notion */}
@@ -1706,8 +1739,7 @@ export default function Index() {
                           type="button"
                           className="su-platform-card notion"
                           onClick={() => {
-                            setSelectedTool("notion");
-                            setWizardStep("connect");
+                            setComingSoonPlatform("Notion");
                           }}
                           style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
                         >
@@ -1720,7 +1752,7 @@ export default function Index() {
                             </div>
                             <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Notion</span>
                           </div>
-                          <span className="su-platform-badge coming-soon">Beta</span>
+                          <span className="su-platform-badge coming-soon">Coming Soon</span>
                         </button>
                       </div>
                     </section>
@@ -3185,7 +3217,17 @@ export default function Index() {
                             <div style={styles.analyticsGrid}>
                               <div style={styles.analyticsStatCard}>
                                 <div style={styles.analyticsStatLabel}>Synced this month</div>
-                                <div style={styles.analyticsStatValue}>{analytics.totalSyncedMonth}</div>
+                                <div style={styles.analyticsStatValue}>
+                                  {analytics.totalSyncedMonth}
+                                  {orderLimit !== null && (
+                                    <span style={{ fontSize: 13, color: C.muted, fontWeight: 500, marginLeft: 4 }}>
+                                      / {orderLimit.toLocaleString()}
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                                  {orderLimit === null ? "Unlimited orders" : `${Math.max(0, orderLimit - analytics.totalSyncedMonth).toLocaleString()} remaining`}
+                                </div>
                               </div>
                               <div style={styles.analyticsStatCard}>
                                 <div style={styles.analyticsStatLabel}>Synced all time</div>
