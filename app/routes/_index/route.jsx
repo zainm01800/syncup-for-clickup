@@ -43,9 +43,9 @@ export default function App() {
           <h1 className={styles.heading}>SyncUp</h1>
         </div>
         
-        <h2 className={styles.title}>Automate your Shopify workflows in your project tools</h2>
+        <h2 className={styles.title}>Automate your Shopify workflows directly in ClickUp</h2>
         <p className={styles.text}>
-          Connect your store in seconds. Automatically create tasks for new orders in ClickUp, Notion, and Monday.com, and mark them complete when fulfilled.
+          Connect your store in seconds. Automatically create tasks for new orders in ClickUp, and mark them complete when fulfilled.
         </p>
 
         {showForm && (
@@ -63,10 +63,10 @@ export default function App() {
 
         <ul className={styles.list}>
           <li>
-            <strong>Instant Task Creation</strong>. A detailed task is created automatically in the list of your choice as soon as a customer places a new order.
+            <strong>Instant ClickUp Tasks</strong>. A detailed task is created automatically in the ClickUp list of your choice as soon as a customer places a new order.
           </li>
           <li>
-            <strong>Fulfillment Sync</strong>. When you fulfill an order in Shopify, the matching task is automatically marked complete in your connected project tool.
+            <strong>Fulfillment Sync</strong>. When you fulfill an order in Shopify, the matching ClickUp task is automatically marked complete.
           </li>
           <li>
             <strong>Real-time Logs</strong>. Monitor sync status, connection health, and view an activity log directly inside your Shopify admin dashboard.
