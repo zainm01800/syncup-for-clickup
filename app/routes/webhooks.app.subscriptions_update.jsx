@@ -2,6 +2,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { PLANS } from "../plans";
 import { logActivity, handleDowngradeToListLimit } from "../clickup.server";
+import { isPromoActiveGlobally } from "../billing.server";
 
 const PLAN_NAME_MAP = {
   "SyncUp Standard Monthly": "standard_monthly",
@@ -53,6 +54,8 @@ export const action = async ({ request }) => {
       return new Response();
     }
 
+    const promoLocked = await isPromoActiveGlobally();
+
     await prisma.subscription.upsert({
       where: { shopDomain: shop },
       update: {
@@ -65,6 +68,7 @@ export const action = async ({ request }) => {
         annualBilling: plan.annual,
         pendingPlanName: null,
         pendingShopifyChargeId: null,
+        isPromoLocked: promoLocked,
       },
       create: {
         shopDomain: shop,
@@ -77,6 +81,7 @@ export const action = async ({ request }) => {
         annualBilling: plan.annual,
         trialStartDate: new Date(),
         trialEndDate: new Date(),
+        isPromoLocked: promoLocked,
       },
     });
 

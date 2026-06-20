@@ -8,6 +8,16 @@ export const action = async ({ request }) => {
   return handleJobProcess(request);
 };
 
+// Boundary-aware, case-insensitive match for a single keyword token against a
+// field value. "cat" matches "cat toy", "cat-toy", "red cat", "TSHIRT-CAT-001"
+// but NOT "category", "education", or "scat" — boundaries are start/end of string
+// or any non-alphanumeric character (spaces, hyphens, slashes, parentheses, …).
+function keywordMatches(kw, text) {
+  if (!kw || !text) return false;
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(text);
+}
+
 // Helper function to check if order satisfies routing constraints
 function satisfiesRoutingConstraints(targetConn, order) {
   // 1. Tag constraint
@@ -39,16 +49,21 @@ function satisfiesRoutingConstraints(targetConn, order) {
     if (!hasLocationMatch) return false;
   }
 
-  // 3. Keyword constraint (legacy keyword routing)
+  // 3. Keyword constraint — comma-separated terms (OR'd), boundary-aware match.
   if (targetConn.keyword && targetConn.keyword.trim()) {
-    const kw = targetConn.keyword.trim().toLowerCase();
+    const terms = targetConn.keyword
+      .split(",")
+      .map((k) => k.trim().toLowerCase())
+      .filter(Boolean);
     const lineItems = order.line_items || [];
-    const hasKeywordMatch = lineItems.some(
-      (item) =>
-        (item.title && item.title.toLowerCase().includes(kw)) ||
-        (item.vendor && item.vendor.toLowerCase().includes(kw)) ||
-        (item.sku && item.sku.toLowerCase().includes(kw))
-    );
+    const hasKeywordMatch =
+      terms.length > 0 &&
+      lineItems.some((item) => {
+        const title = (item.title || "").toLowerCase();
+        const vendor = (item.vendor || "").toLowerCase();
+        const sku = (item.sku || "").toLowerCase();
+        return terms.some((kw) => keywordMatches(kw, title) || keywordMatches(kw, vendor) || keywordMatches(kw, sku));
+      });
     if (!hasKeywordMatch) return false;
   }
 
@@ -133,13 +148,25 @@ async function syncToPlatformConnection({
   if (connection.listConnections && connection.listConnections.length > 0) {
     let matchedTarget = null;
     if (isGrowthOrPro) {
-      matchedTarget = connection.listConnections.find(tc => satisfiesRoutingConstraints(tc, order));
+      // Evaluate more-specific targets first (those with a keyword/tag/location
+      // constraint) so routing rules win over generic catch-all lists. Stable sort
+      // preserves the merchant's configured order within the same specificity.
+      const hasConstraint = (t) =>
+        (t.keyword && t.keyword.trim()) ||
+        (t.routingTag && t.routingTag.trim()) ||
+        (t.routingLocationId && t.routingLocationId.trim())
+          ? 1
+          : 0;
+      const ordered = [...connection.listConnections].sort(
+        (a, b) => hasConstraint(b) - hasConstraint(a)
+      );
+      matchedTarget = ordered.find((tc) => satisfiesRoutingConstraints(tc, order));
     }
     if (matchedTarget) {
       targetListId = matchedTarget.id;
       targetListName = matchedTarget.name;
     } else {
-      // Fallback: use first target connection
+      // Fallback: the first configured list acts as the catch-all for unmatched orders.
       targetListId = connection.listConnections[0].id;
       targetListName = connection.listConnections[0].name;
     }
@@ -428,7 +455,7 @@ async function handleJobProcess(request) {
       logActivity,
       compileMarkdownTable,
     },
-    { getOrCreateSubscription, isSubscriptionActive, incrementOrderCount },
+    { getOrCreateSubscription, isSubscriptionActive, getInactiveReason, incrementOrderCount },
     { ClickUpAdapter, MondayAdapter, NotionAdapter }
   ] = await Promise.all([
     import("../db.server"),
@@ -481,7 +508,24 @@ async function handleJobProcess(request) {
       
       const subscription = await getOrCreateSubscription(shopDomain);
       if (!isSubscriptionActive(subscription)) {
-        throw new Error(`Subscription inactive for ${shopDomain}`);
+        const reason = getInactiveReason(subscription);
+        if (reason === "monthly_limit") {
+          // Transient: the shop hit its monthly order cap. Park the job as
+          // "waiting" (distinct from "failed") so it doesn't inflate the
+          // dashboard's failed count or get churned by "retry all". It is
+          // re-queued to "pending" automatically when the counter resets at
+          // the start of the next billing cycle (see getOrCreateSubscription).
+          await prisma.syncJob.update({
+            where: { id: job.id },
+            data: {
+              status: "waiting",
+              lastError: "Monthly order limit reached — will auto-sync when the plan resets",
+            },
+          });
+          results.push({ jobId: job.id, success: false, skipped: true, reason: "monthly_limit" });
+          continue;
+        }
+        throw new Error(`Subscription not active (${reason || "unknown"}) — skipping order`);
       }
 
       // Check sync trigger setting

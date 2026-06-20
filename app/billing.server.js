@@ -17,6 +17,24 @@ async function logActivity(shop, eventType, description) {
     .catch((e) => console.error("Billing logActivity failed:", e));
 }
 
+// Whether the global "launch special" promo pool still has free slots. This
+// controls the price charged to NEW subscribers and the scarcity banner. It does
+// NOT control what an already-grandfathered merchant sees — that is governed by
+// their own isPromoLocked flag (see activateSubscription / userSeesPromo).
+export async function isPromoActiveGlobally() {
+  const activePaidCount = await prisma.subscription.count({
+    where: {
+      planName: {
+        notIn: ["trial", "free", "expired", "cancelled"],
+      },
+      shopDomain: {
+        not: "syncup-test-store.myshopify.com",
+      },
+    },
+  });
+  return activePaidCount < 10;
+}
+
 export async function getOrCreateSubscription(shop) {
   let sub = await prisma.subscription.findUnique({
     where: { shopDomain: shop },
@@ -82,6 +100,8 @@ export async function getOrCreateSubscription(shop) {
             pendingPlanName: null,
             pendingShopifyChargeId: null,
             ordersSyncedThisMonth: 0,
+            // Keep promo lock sticky across a scheduled upgrade activation.
+            isPromoLocked: sub.isPromoLocked || (await isPromoActiveGlobally()),
           },
         });
         await logActivity(shop, "plan_activated", `Scheduled plan "${plan.name}" is now active`);
@@ -92,12 +112,24 @@ export async function getOrCreateSubscription(shop) {
     }
   }
 
-  // Handle monthly resetting of sync count for active subscriptions
-  if (sub.billingCycleStart && isNewMonth(sub.billingCycleStart)) {
+  // Handle monthly resetting of the order counter. Track the reset independently
+  // (lastCounterReset) so we never overwrite billingCycleStart — that column is
+  // the anchor for grace-period / expiry date math and must stay at the real
+  // cycle start. Falls back to billingCycleStart for rows created before this
+  // column existed.
+  const resetAnchor = sub.lastCounterReset || sub.billingCycleStart;
+  if (resetAnchor && isNewMonth(resetAnchor)) {
     sub = await prisma.subscription.update({
       where: { shopDomain: shop },
-      data: { ordersSyncedThisMonth: 0, billingCycleStart: new Date() },
+      data: { ordersSyncedThisMonth: 0, lastCounterReset: new Date() },
     });
+    // New month = order cap reset. Re-queue any jobs that were waiting on the
+    // limit so they sync now (they're excluded from the normal failed/pending
+    // poll and only reactivated here).
+    await prisma.syncJob.updateMany({
+      where: { shopDomain: shop, status: "waiting" },
+      data: { status: "pending" },
+    }).catch((e) => console.error("Failed to requeue waiting jobs on reset:", e));
   }
 
   // Also verify if trial has expired and transition state
@@ -162,6 +194,31 @@ export function isSubscriptionActive(subscription) {
     }
   }
   return true;
+}
+
+// Returns the reason a subscription is inactive, or null if it is active.
+// Mirrors isSubscriptionActive so callers (e.g. the sync job processor) can tell
+// "monthly_limit" (transient — retry automatically when the counter resets) apart
+// from genuinely inactive states (trial expired, cancelled, etc.).
+export function getInactiveReason(subscription) {
+  if (
+    subscription.status === "paused" ||
+    subscription.status === "expired" ||
+    subscription.status === "cancelled" ||
+    subscription.planName === "expired" ||
+    subscription.planName === "cancelled"
+  ) {
+    return "inactive";
+  }
+  if (subscription.planName === "trial") {
+    if (new Date() > new Date(subscription.trialEndDate)) return "trial_expired";
+    return null;
+  }
+  const plan = PLANS[subscription.planName];
+  if (plan && plan.monthlyOrderLimit !== null && subscription.ordersSyncedThisMonth >= plan.monthlyOrderLimit) {
+    return "monthly_limit";
+  }
+  return null;
 }
 
 export function getTrialBannerStatus(subscription) {
@@ -375,6 +432,10 @@ export async function cancelExistingSubscription(admin, chargeId) {
 export async function activateSubscription(shop, planKey, chargeId) {
   const plan = PLANS[planKey];
   const now = new Date();
+  // Lock in promo pricing for this merchant if the launch promo is still active
+  // at the moment they activate. Once locked, they keep seeing promo prices even
+  // after the global pool fills (see isPromoLocked on the Subscription model).
+  const promoLocked = await isPromoActiveGlobally();
 
   return prisma.subscription.upsert({
     where: { shopDomain: shop },
@@ -388,6 +449,7 @@ export async function activateSubscription(shop, planKey, chargeId) {
       annualBilling: plan.annual,
       pendingPlanName: null,
       pendingShopifyChargeId: null,
+      isPromoLocked: promoLocked,
     },
     create: {
       shopDomain: shop,
@@ -402,6 +464,7 @@ export async function activateSubscription(shop, planKey, chargeId) {
       trialEndDate: now,
       pendingPlanName: null,
       pendingShopifyChargeId: null,
+      isPromoLocked: promoLocked,
     },
   });
 }

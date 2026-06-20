@@ -125,6 +125,12 @@ export const loader = async ({ request }) => {
   const connection = await getConnection(shop);
   const selectedPlatform = url.searchParams.get("platform") || connection?.selectedPlatform || "clickup";
 
+  // Count currently-connected lists so we can warn the merchant before a
+  // downgrade/cancellation would disconnect any of them (each plan has a listLimit).
+  const connectedListCount = connection
+    ? await prisma.syncTarget.count({ where: { connectionId: connection.id, isActive: true } })
+    : 0;
+
   const activePaidCount = await prisma.subscription.count({
     where: {
       planName: {
@@ -159,7 +165,7 @@ export const loader = async ({ request }) => {
   const scheduled = url.searchParams.get("scheduled") === "1";
   const scheduledPlan = url.searchParams.get("scheduled_plan") || null;
 
-  return { subscription, selectedPlatform, activePaidCount, isTestModeActive, expiryDate, scheduled, scheduledPlan, scheduledStartDate };
+  return { subscription, selectedPlatform, activePaidCount, isTestModeActive, expiryDate, scheduled, scheduledPlan, scheduledStartDate, connectedListCount };
 };
 
 export const action = async ({ request }) => {
@@ -276,7 +282,7 @@ const C = {
 };
 
 export default function BillingPage() {
-  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive, expiryDate, scheduled, scheduledPlan, scheduledStartDate } = useLoaderData();
+  const { subscription, selectedPlatform, activePaidCount = 0, isTestModeActive, expiryDate, scheduled, scheduledPlan, scheduledStartDate, connectedListCount = 0 } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -313,9 +319,9 @@ export default function BillingPage() {
       key: "standard",
       badge: "Best for Starters",
       priceDesc: "$19.99/mo",
-      annualPriceDesc: "$17.91/mo",
+      annualPriceDesc: "$17.92/mo",
       billedDesc: "Billed annually as $215",
-      monthlyEquivalent: "17.91",
+      monthlyEquivalent: "17.92",
       regMonthly: "$29.99",
       regAnnual: "$323",
     },
@@ -323,9 +329,9 @@ export default function BillingPage() {
       key: "growth",
       badge: "Most Popular",
       priceDesc: "$39.99/mo",
-      annualPriceDesc: "$35.91/mo",
+      annualPriceDesc: "$35.92/mo",
       billedDesc: "Billed annually as $431",
-      monthlyEquivalent: "35.91",
+      monthlyEquivalent: "35.92",
       regMonthly: "$49.99",
       regAnnual: "$539",
     },
@@ -333,9 +339,9 @@ export default function BillingPage() {
       key: "pro",
       badge: "Concierge Setup Included",
       priceDesc: "$79.99/mo",
-      annualPriceDesc: "$71.91/mo",
+      annualPriceDesc: "$71.92/mo",
       billedDesc: "Billed annually as $863",
-      monthlyEquivalent: "71.91",
+      monthlyEquivalent: "71.92",
       regMonthly: "$99.99",
       regAnnual: "$1079",
     },
@@ -408,6 +414,10 @@ export default function BillingPage() {
   };
 
   const isPromoActive = activePaidCount < 10;
+  // A merchant who subscribed during the launch promo is grandfathered: they keep
+  // seeing promo prices even after the global 10-slot pool fills, so the price on
+  // this page always matches what Shopify is actually charging them.
+  const userSeesPromo = isPromoActive || subscription?.isPromoLocked === true;
   const spotsRemaining = Math.max(0, 10 - activePaidCount);
 
   return (
@@ -728,6 +738,23 @@ export default function BillingPage() {
           </span>
         </div>
 
+        {/* Current plan indicator — stays visible regardless of the monthly/annual toggle,
+            so the merchant never loses sight of which plan they're on. */}
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <span style={{
+            display: "inline-block",
+            fontSize: 12,
+            fontWeight: 600,
+            color: C.accent,
+            backgroundColor: "rgba(0, 196, 140, 0.08)",
+            border: "1px solid rgba(0, 196, 140, 0.2)",
+            padding: "6px 14px",
+            borderRadius: 9999,
+          }}>
+            Your current plan: {PLANS[currentPlanKey]?.name || (currentPlanKey === "trial" ? "Free Trial" : "Free Plan")}
+          </span>
+        </div>
+
         {/* Pricing Grid */}
         <div style={{
           display: "grid",
@@ -752,16 +779,16 @@ export default function BillingPage() {
               displayPrice = "Free/mo";
             } else {
               if (billingInterval === "annual") {
-                if (isPromoActive) {
+                if (userSeesPromo) {
                   displayPrice = spec.annualPriceDesc;
                   regularPrice = `$${(parseFloat(spec.regAnnual.replace("$", "")) / 12).toFixed(2)}/mo`;
-                  billedInfo = `${spec.billedDesc} (${spec.priceDesc} equivalent)`;
+                  billedInfo = `${spec.billedDesc}`;
                 } else {
                   displayPrice = `$${(parseFloat(spec.regAnnual.replace("$", "")) / 12).toFixed(2)}/mo`;
-                  billedInfo = `Billed annually as ${spec.regAnnual} (${spec.regMonthly} equivalent)`;
+                  billedInfo = `Billed annually as ${spec.regAnnual}`;
                 }
               } else {
-                if (isPromoActive) {
+                if (userSeesPromo) {
                   displayPrice = spec.priceDesc;
                   regularPrice = spec.regMonthly;
                 } else {
@@ -784,6 +811,22 @@ export default function BillingPage() {
             const currentLevel = PLAN_LEVELS[currentPlanKey] || 0;
             const targetLevel = PLAN_LEVELS[planKey] || 0;
             const isDowngradeOption = targetLevel < currentLevel;
+            const isUpgradeOption = targetLevel > currentLevel;
+
+            // Upgrade-cost hint shown on the card: the per-period difference between
+            // this plan and the merchant's current plan at the displayed interval.
+            const intervalTextCard = billingInterval === "annual" ? "yr" : "mo";
+            const currentBase = (currentPlanKey || "").replace(/_(monthly|annual)$/, "");
+            const currentAtInterval = PLANS[`${currentBase}_${billingInterval}`];
+            const effPlanPrice = (p) =>
+              p ? (userSeesPromo ? p.price : p.regularPrice || p.price) : 0;
+            const upgradeDiff = effPlanPrice(plan) - effPlanPrice(currentAtInterval);
+            const isUpgradeFromPaid =
+              isUpgradeOption &&
+              !!currentAtInterval &&
+              upgradeDiff > 0 &&
+              currentPlanKey !== "trial" &&
+              currentPlanKey !== "free";
 
             return (
               <div
@@ -1044,7 +1087,7 @@ export default function BillingPage() {
                       cursor: "not-allowed",
                       boxSizing: "border-box",
                     }}>
-                      {key === "free" ? "Cancel Plan to Downgrade" : `Cancel plan to switch to ${plan.name.split(" ")[0]}`}
+                      {key === "free" ? "Cancel your plan to move to Free" : `Downgrades aren't available mid-cycle. Cancel your plan, then choose ${plan.name.split(" ")[0]} after it expires.`}
                     </div>
                   ) : key === "free" && subscription.shopifyChargeStatus === "cancelled" ? (
                     <div style={{
@@ -1145,6 +1188,11 @@ export default function BillingPage() {
                                   })()}
                                 </strong>.
                               </p>
+                              {connectedListCount > 1 && (
+                                <p style={{ color: "#ffb84d", margin: "0 0 12px 0", fontSize: 11, fontWeight: 600 }}>
+                                  ⚠ Heads up: when your plan expires you'll move to the Free plan (1 list), so {connectedListCount - 1} of your {connectedListCount} connected lists will be disconnected.
+                                </p>
+                              )}
                               <div style={{ display: "flex", gap: 8 }}>
                                 <Form method="post" style={{ margin: 0, padding: 0, flex: 1 }}>
                                   <input type="hidden" name="intent" value="cancel" />
@@ -1203,11 +1251,23 @@ export default function BillingPage() {
                       </div>
                     )
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => setActiveConfirmPlanKey(planKey)}
-                      style={getButtonStyle(isHighlighted)}
-                      disabled={isSubmitting}
+                    <>
+                      {isUpgradeFromPaid && (
+                        <div style={{
+                          fontSize: 11,
+                          color: C.accent,
+                          textAlign: "center",
+                          marginBottom: 8,
+                          fontWeight: 600,
+                        }}>
+                          +${upgradeDiff.toFixed(2)}/{intervalTextCard} to upgrade from {PLANS[currentPlanKey]?.name?.split(" ")[0] || "your plan"}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setActiveConfirmPlanKey(planKey)}
+                        style={getButtonStyle(isHighlighted)}
+                        disabled={isSubmitting}
                       onMouseEnter={(e) => {
                         if (isHighlighted) {
                           e.currentTarget.style.backgroundColor = "#34d399";
@@ -1237,6 +1297,7 @@ export default function BillingPage() {
                         ? "Select Free"
                         : `Get ${plan.name.split(" ")[0]}`}
                     </button>
+                    </>
                   )}
                 </div>
 
@@ -1256,8 +1317,21 @@ export default function BillingPage() {
           marginRight: "auto",
           lineHeight: 1.6,
         }}>
-          Shopify manages all subscriptions securely. You can cancel or change your plan at any time. Moving between paid plans uses immediate replacement overrides.
+          Shopify manages all subscriptions securely. Upgrades take effect instantly with a prorated charge. Downgrades aren't available mid-cycle — cancel and re-subscribe after your cycle ends.
         </p>
+
+        {/* Plain-English FAQ about plan changes */}
+        <details style={{ maxWidth: 640, margin: "24px auto 0", fontSize: 12, color: C.muted }}>
+          <summary style={{ cursor: "pointer", color: C.text, fontWeight: 600, padding: "8px 0" }}>
+            What happens when I change plans?
+          </summary>
+          <ul style={{ marginTop: 8, lineHeight: 1.7, paddingLeft: 20 }}>
+            <li>Your synced order history and activity log are always preserved.</li>
+            <li>Your task name/description templates and sync settings stay the same.</li>
+            <li>Upgrades are instant — you only pay the prorated difference for this cycle.</li>
+            <li>Downgrading or cancelling may reduce your connected lists to the new plan's limit (Free = 1 list).</li>
+          </ul>
+        </details>
       {/* Plan Change Confirmation Modal */}
       {activeConfirmPlanKey && (
         <div style={{
@@ -1312,7 +1386,7 @@ export default function BillingPage() {
               const getPlanPrice = (planKey) => {
                 const plan = PLANS[planKey];
                 if (!plan) return 0;
-                if (isPromoActive) {
+                if (userSeesPromo) {
                   return plan.price;
                 }
                 return plan.regularPrice || plan.price;
@@ -1346,7 +1420,7 @@ export default function BillingPage() {
                           transition: "border-color 0.2s ease, background-color 0.2s ease",
                           boxSizing: "border-box",
                         }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
                             <input
                               type="radio"
                               name="timing_choice"
@@ -1358,9 +1432,12 @@ export default function BillingPage() {
                             <span style={{ fontSize: 13, fontWeight: "bold", color: C.text }}>
                               Upgrade right now
                             </span>
+                            <span style={{ fontSize: 13, fontWeight: 800, color: C.accent }}>
+                              · Pay ${diffPrice.toFixed(2)} today
+                            </span>
                           </div>
                           <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
-                            Shopify will charge you the difference immediately. A prorated credit for the unused time of your current plan will be applied. (The price difference is <strong style={{ color: C.text }}>${diffPrice.toFixed(2)}/{intervalText}</strong>).
+                            You pay a <strong style={{ color: C.text }}>prorated amount for the rest of this cycle</strong> (based on the ${diffPrice.toFixed(2)}/{intervalText} difference between plans), then <strong style={{ color: C.text }}>${targetPrice.toFixed(2)}/{intervalText}</strong> on every renewal after that. Shopify credits the unused time on your current plan. The new plan is active immediately.
                           </div>
                         </label>
 
@@ -1374,7 +1451,7 @@ export default function BillingPage() {
                           transition: "border-color 0.2s ease, background-color 0.2s ease",
                           boxSizing: "border-box",
                         }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
                             <input
                               type="radio"
                               name="timing_choice"
@@ -1384,11 +1461,14 @@ export default function BillingPage() {
                               style={{ accentColor: C.accent, cursor: "pointer" }}
                             />
                             <span style={{ fontSize: 13, fontWeight: "bold", color: C.text }}>
-                              Upgrade next month
+                              Start next cycle
+                            </span>
+                            <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>
+                              · ${targetPrice.toFixed(2)}/{intervalText}
                             </span>
                           </div>
                            <div style={{ fontSize: 11, color: C.muted, paddingLeft: 24, lineHeight: 1.4 }}>
-                             Keep your current plan active for now. The <strong style={{ color: C.text }}>{targetPlan?.name?.split(" ")[0] || "new"} plan</strong> will start automatically on your next billing cycle: <strong>{expiryString}</strong> at <strong style={{ color: C.text }}>${targetPrice.toFixed(2)}/{intervalText}</strong>.
+                             Keep your current plan for now. The <strong style={{ color: C.text }}>{targetPlan?.name?.split(" ")[0] || "new"} plan</strong> starts automatically on your next billing cycle (<strong>{expiryString}</strong>) at the full price of <strong style={{ color: C.text }}>${targetPrice.toFixed(2)}/{intervalText}</strong>. You are not charged until it starts.
                            </div>
                         </label>
                       </div>

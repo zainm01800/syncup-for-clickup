@@ -46,8 +46,11 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: "No status text resolved" });
     }
 
-    const completeKeywords = ["complete", "done", "shipped", "fulfilled", "ready to ship"];
-    const isCompleted = completeKeywords.some(kw => newStatusLabel.includes(kw));
+    // EXACT (case-insensitive) match against done-like status labels. Substring
+    // matching is dangerous here — "incomplete", "undone", or "not done" would
+    // all auto-fulfill the order (newStatusLabel is already lowercased above).
+    const completeKeywords = ["complete", "completed", "closed", "done", "shipped", "fulfilled", "ready to ship", "delivered"];
+    const isCompleted = completeKeywords.includes(newStatusLabel.trim());
 
     if (!isCompleted) {
       return json({ ok: true, message: `Status '${newStatusLabel}' is not a fulfillment trigger` });
@@ -133,8 +136,10 @@ export const action = async ({ request }) => {
       }
     `;
 
+    let hadUserErrors = false;
+    const collectedErrors = [];
     for (const fo of openFulfillmentOrders) {
-      await fetch(shopifyAdminUrl, {
+      const fulfillRes = await fetch(shopifyAdminUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -154,6 +159,22 @@ export const action = async ({ request }) => {
           }
         })
       });
+      const fulfillJson = await fulfillRes.json().catch(() => ({}));
+      const userErrors = fulfillJson?.data?.fulfillmentCreateV2?.userErrors || [];
+      if (userErrors.length > 0) {
+        hadUserErrors = true;
+        collectedErrors.push(...userErrors.map((e) => e.message));
+      }
+    }
+
+    if (hadUserErrors) {
+      console.error(`Fulfillment userErrors for order ${record.shopifyOrderId}:`, collectedErrors);
+      await logActivity(
+        record.shopDomain,
+        "sync_failed",
+        `Monday.com marked item complete, but Shopify fulfillment failed for order #${record.orderNumber || record.shopifyOrderId}: ${collectedErrors.join("; ")}`
+      );
+      return json({ ok: false, error: "Fulfillment rejected by Shopify", details: collectedErrors }, { status: 500 });
     }
 
     // Update status & log

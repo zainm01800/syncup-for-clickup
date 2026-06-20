@@ -29,9 +29,14 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: "No status change in payload" });
     }
 
-    const afterStatus = String(statusChange.after || "").toLowerCase();
-    const completeKeywords = ["complete", "closed", "done", "shipped", "fulfilled", "ready to ship"];
-    const isCompleted = completeKeywords.some(kw => afterStatus.includes(kw));
+    const afterStatus = String(statusChange.after || "").toLowerCase().trim();
+    // EXACT (case-insensitive) match against done-like status names. Substring
+    // matching here is dangerous — "incomplete", "undone", or "not done" would
+    // all trigger an auto-fulfill (charging the customer + shipping). Merchants
+    // should name their ClickUp "done" status to match one of these (a
+    // configurable completion status is a future enhancement).
+    const completeKeywords = ["complete", "completed", "closed", "done", "shipped", "fulfilled", "ready to ship", "delivered"];
+    const isCompleted = completeKeywords.includes(afterStatus);
 
     if (!isCompleted) {
       return json({ ok: true, message: `Status '${afterStatus}' is not a fulfillment trigger` });
@@ -117,8 +122,10 @@ export const action = async ({ request }) => {
       }
     `;
 
+    let hadUserErrors = false;
+    const collectedErrors = [];
     for (const fo of openFulfillmentOrders) {
-      await fetch(shopifyAdminUrl, {
+      const fulfillRes = await fetch(shopifyAdminUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -138,6 +145,23 @@ export const action = async ({ request }) => {
           }
         })
       });
+      const fulfillJson = await fulfillRes.json().catch(() => ({}));
+      const userErrors = fulfillJson?.data?.fulfillmentCreateV2?.userErrors || [];
+      if (userErrors.length > 0) {
+        hadUserErrors = true;
+        collectedErrors.push(...userErrors.map((e) => e.message));
+      }
+    }
+
+    if (hadUserErrors) {
+      // Do NOT mark the record fulfilled — the Shopify mutation rejected it.
+      console.error(`Fulfillment userErrors for order ${record.shopifyOrderId}:`, collectedErrors);
+      await logActivity(
+        record.shopDomain,
+        "sync_failed",
+        `ClickUp marked task complete, but Shopify fulfillment failed for order #${record.orderNumber || record.shopifyOrderId}: ${collectedErrors.join("; ")}`
+      );
+      return json({ ok: false, error: "Fulfillment rejected by Shopify", details: collectedErrors }, { status: 500 });
     }
 
     // Update status & log

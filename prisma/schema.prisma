@@ -55,6 +55,14 @@ model Subscription {
   updatedAt              DateTime  @updatedAt @map("updated_at")
   pendingPlanName        String?   @map("pending_plan_name")
   pendingShopifyChargeId String?   @map("pending_shopify_charge_id")
+  // True if this shop subscribed while the launch promo was active. Locks the
+  // displayed (and charged) price for them even after the global promo pool fills,
+  // so the price a merchant sees always matches what Shopify is charging them.
+  isPromoLocked          Boolean   @default(false) @map("is_promo_locked")
+  // Tracks the monthly order-counter reset independently of billingCycleStart.
+  // Previously billingCycleStart was overwritten each month, which corrupted
+  // grace-period / expiry date math. See getOrCreateSubscription in billing.server.js.
+  lastCounterReset       DateTime? @map("last_counter_reset")
 
   @@map("subscriptions")
 }
