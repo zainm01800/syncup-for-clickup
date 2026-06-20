@@ -323,7 +323,7 @@ async function syncToPlatformConnection({
   // Compile subtask names (only if enabled by plan + subscription setting)
   const subtasksEnabled = isGrowthOrPro && subscription.subtasksEnabled;
   const subtaskNames = [];
-  if (order.line_items?.length > 0) {
+  if (subtasksEnabled && order.line_items?.length > 0) {
     for (const item of order.line_items) {
       const subtaskName = `${item.quantity}x ${item.title}${item.variant_title ? ` (${item.variant_title})` : ""}`;
       subtaskNames.push(subtaskName);
