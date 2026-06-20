@@ -498,6 +498,24 @@ async function handleJobProcess(request) {
       if (claimResult.count === 0) {
         continue; 
       }
+
+      // Concurrency safety: check if another job for the same shop/order is already in "processing" status.
+      // If so, release this job back to "pending" to let them run sequentially and prevent duplicate tasks.
+      const activeProcessingJob = await prisma.syncJob.findFirst({
+        where: {
+          shopDomain: job.shopDomain,
+          shopifyOrderId: job.shopifyOrderId,
+          status: "processing",
+          id: { not: job.id },
+        },
+      });
+      if (activeProcessingJob) {
+        await prisma.syncJob.update({
+          where: { id: job.id },
+          data: { status: "pending" },
+        });
+        continue;
+      }
     } catch (e) {
       continue;
     }

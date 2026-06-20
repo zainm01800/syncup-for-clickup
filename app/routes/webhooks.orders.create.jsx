@@ -6,16 +6,35 @@ export const action = async ({ request }) => {
   const { shop, topic, payload } = await authenticate.webhook(request);
   console.log(`Received ${topic} webhook for ${shop}`);
 
-  // Create a new background SyncJob row
+  // Create a new background SyncJob row if not already synced or queued
   try {
-    await prisma.syncJob.create({
-      data: {
+    const existingRecord = await prisma.orderSyncRecord.findFirst({
+      where: {
         shopDomain: shop,
         shopifyOrderId: String(payload.id),
-        payload: JSON.stringify(payload),
-        status: "pending",
       }
     });
+    if (existingRecord) {
+      return Response.json({ ok: true, reason: "already_synced" });
+    }
+
+    const existingJob = await prisma.syncJob.findFirst({
+      where: {
+        shopDomain: shop,
+        shopifyOrderId: String(payload.id),
+      }
+    });
+
+    if (!existingJob) {
+      await prisma.syncJob.create({
+        data: {
+          shopDomain: shop,
+          shopifyOrderId: String(payload.id),
+          payload: JSON.stringify(payload),
+          status: "pending",
+        }
+      });
+    }
 
     // Fire-and-forget: Trigger the background processing endpoint asynchronously
     const host = request.headers.get("host");

@@ -61,7 +61,6 @@ export const action = async ({ request }) => {
           where: {
             shopDomain: shop,
             shopifyOrderId: String(order.id),
-            status: { in: ["pending", "processing"] }
           }
         });
         if (!existingJob) {
