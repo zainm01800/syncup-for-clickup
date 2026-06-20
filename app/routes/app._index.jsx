@@ -1135,6 +1135,15 @@ export default function Index() {
     }
   }, [actionData]);
 
+  // Close the disconnect modal only AFTER the server confirms the disconnect.
+  // (Closing it on the submit button's onClick unmounts the <Form> before the
+  // submit reaches the server, so the disconnect never actually fires.)
+  useEffect(() => {
+    if (actionData?.disconnected) {
+      setShowDisconnectModal(false);
+    }
+  }, [actionData]);
+
   const applyPreset = (presetName) => {
     let matchedMappings = [];
     clickupFields.forEach((field) => {
@@ -3431,7 +3440,6 @@ export default function Index() {
                 <input type="hidden" name="intent" value="disconnect" />
                 <button
                   type="submit"
-                  onClick={() => setShowDisconnectModal(false)}
                   style={{
                     background: "#ff4444",
                     border: "none",
