@@ -225,10 +225,15 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "upgrade" && planKey) {
-    const replacementBehavior = formData.get("replacement_behavior") || "APPLY_IMMEDIATELY";
+    const subscription = await getOrCreateSubscription(shop);
+    let replacementBehavior = formData.get("replacement_behavior") || "APPLY_IMMEDIATELY";
+
+    // If the subscription is cancelled (in grace period), force scheduling it to avoid charging immediately
+    if (subscription.shopifyChargeStatus === "cancelled" && planKey !== "free") {
+      replacementBehavior = "APPLY_ON_NEXT_BILLING_CYCLE";
+    }
 
     if (planKey === "free") {
-      const subscription = await getOrCreateSubscription(shop);
       if (subscription.shopifyChargeId) {
         await cancelExistingSubscription(admin, subscription.shopifyChargeId);
       }
@@ -314,6 +319,16 @@ export default function BillingPage() {
       annualPriceDesc: "Free forever",
       billedDesc: "Billed monthly",
       monthlyEquivalent: "0",
+    },
+    starter: {
+      key: "starter",
+      badge: "Lite Syncing",
+      priceDesc: "$9.99/mo",
+      annualPriceDesc: "$8.25/mo",
+      billedDesc: "Billed annually as $99",
+      monthlyEquivalent: "8.25",
+      regMonthly: "$14.99",
+      regAnnual: "$149",
     },
     standard: {
       key: "standard",
@@ -762,7 +777,7 @@ export default function BillingPage() {
           gap: 24,
           alignItems: "stretch",
         }}>
-          {["standard", "growth", "pro"].map((key) => {
+          {["starter", "standard", "growth", "pro"].map((key) => {
             const planKey = key === "free" ? "free" : `${key}_${billingInterval}`;
             const plan = PLANS[planKey];
             if (!plan) return null;
@@ -800,12 +815,14 @@ export default function BillingPage() {
             const PLAN_LEVELS = {
               free: 0,
               trial: 0,
-              standard_monthly: 1,
-              standard_annual: 1,
-              growth_monthly: 2,
-              growth_annual: 2,
-              pro_monthly: 3,
-              pro_annual: 3,
+              starter_monthly: 1,
+              starter_annual: 1,
+              standard_monthly: 2,
+              standard_annual: 2,
+              growth_monthly: 3,
+              growth_annual: 3,
+              pro_monthly: 4,
+              pro_annual: 4,
             };
 
             const currentLevel = PLAN_LEVELS[currentPlanKey] || 0;
@@ -1369,12 +1386,14 @@ export default function BillingPage() {
               const PLAN_LEVELS = {
                 free: 0,
                 trial: 0,
-                standard_monthly: 1,
-                standard_annual: 1,
-                growth_monthly: 2,
-                growth_annual: 2,
-                pro_monthly: 3,
-                pro_annual: 3,
+                starter_monthly: 1,
+                starter_annual: 1,
+                standard_monthly: 2,
+                standard_annual: 2,
+                growth_monthly: 3,
+                growth_annual: 3,
+                pro_monthly: 4,
+                pro_annual: 4,
               };
               const currentLevel = PLAN_LEVELS[currentPlanKey] || 0;
               const targetLevel = PLAN_LEVELS[activeConfirmPlanKey] || 0;

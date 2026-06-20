@@ -5,6 +5,8 @@ import { logActivity, handleDowngradeToListLimit } from "../clickup.server";
 import { isPromoActiveGlobally } from "../billing.server";
 
 const PLAN_NAME_MAP = {
+  "SyncUp Starter Monthly": "starter_monthly",
+  "SyncUp Starter Annual": "starter_annual",
   "SyncUp Standard Monthly": "standard_monthly",
   "SyncUp Standard Annual": "standard_annual",
   "SyncUp Growth Monthly": "growth_monthly",
