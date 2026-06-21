@@ -94,20 +94,12 @@ export const action = async ({ request }) => {
     return new Response();
   }
 
-  if (order.fulfillment_status !== "fulfilled") {
-    console.log(
-      `Order ${order.id} not fully fulfilled (status: ${order.fulfillment_status}); skipping completion sync`
-    );
-    return new Response();
-  }
-
   if (
-    record.syncStatus === "fulfilled" ||
     record.targetRecordId === "failed" ||
     record.targetRecordId === "pending"
   ) {
     console.log(
-      `Order ${order.id} is already marked fulfilled or has no active integration record; skipping`
+      `Order ${order.id} has no active integration record; skipping`
     );
     return new Response();
   }
@@ -124,61 +116,168 @@ export const action = async ({ request }) => {
     adapter = new NotionAdapter(connection.accessToken);
   }
 
-  try {
-    if (!adapter) {
-      throw new Error(`Unsupported selectedPlatform: ${platform}`);
-    }
+  if (!adapter) {
+    console.error(`Unsupported selectedPlatform: ${platform}`);
+    return new Response();
+  }
 
-    await withRetry(
-      () => adapter.completeRecord(record.targetRecordId),
-      1,
-      1000
-    );
-
-    // Update refactored status
+  // 1. Handle Full Fulfillment
+  if (order.fulfillment_status === "fulfilled" && record.syncStatus !== "fulfilled") {
     try {
-      await prisma.orderSyncRecord.updateMany({
-        where: { shopDomain: shop, shopifyOrderId: String(order.id) },
-        data: { syncStatus: "fulfilled" }
-      });
-    } catch (dbErr) {
-      console.error("Failed to update OrderSyncRecord status:", dbErr);
+      await withRetry(
+        () => adapter.completeRecord(record.targetRecordId),
+        1,
+        1000
+      );
+
+      try {
+        await adapter.postComment(record.targetRecordId, "📦 Shopify Order fully fulfilled. Task marked complete.");
+      } catch (commentErr) {
+        console.error("Failed to post full fulfillment comment:", commentErr);
+      }
+
+      // Update refactored status
+      try {
+        await prisma.orderSyncRecord.updateMany({
+          where: { shopDomain: shop, shopifyOrderId: String(order.id) },
+          data: { syncStatus: "fulfilled" }
+        });
+      } catch (dbErr) {
+        console.error("Failed to update OrderSyncRecord status:", dbErr);
+      }
+
+      logActivity(
+        shop,
+        "order_fulfilled",
+        `Order #${orderNumber} marked complete in ${platform === "clickup" ? "ClickUp" : platform === "monday" ? "Monday.com" : "Notion"}`,
+        String(order.id),
+        record.targetRecordId
+      );
+      console.log(
+        `Marked ${platform} record ${record.targetRecordId} complete for order ${order.id}`
+      );
+
+      // Mutate local status to prevent later checks from firing
+      record.syncStatus = "fulfilled";
+    } catch (error) {
+      console.error(
+        `Failed to complete record ${record.targetRecordId} for order ${order.id}:`,
+        error
+      );
+
+      const hasRetryFeature = subscription.planName === "trial" || subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+      if (hasRetryFeature) {
+        logActivity(
+          shop,
+          "sync_retried",
+          `Order #${orderNumber} fulfillment sync failed; retrying in 60 seconds...`,
+          String(order.id),
+          record.targetRecordId
+        );
+        scheduleFulfillmentRetry(shop, String(order.id), record.targetRecordId, orderNumber);
+      } else {
+        logActivity(
+          shop,
+          "sync_failed",
+          `Order #${orderNumber} fulfillment sync failed: ${error.message}`,
+          String(order.id),
+          record.targetRecordId
+        );
+      }
     }
+  }
+  // 2. Handle Partial Fulfillment
+  else if (order.fulfillment_status === "partial" && record.syncStatus !== "partially_fulfilled" && record.syncStatus !== "fulfilled") {
+    try {
+      try {
+        await adapter.postComment(record.targetRecordId, "📦 Shopify Order is partially fulfilled.");
+      } catch (commentErr) {
+        console.error("Failed to post partial fulfillment comment:", commentErr);
+      }
 
-    logActivity(
-      shop,
-      "order_fulfilled",
-      `Order #${orderNumber} marked complete in ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}`,
-      String(order.id),
-      record.targetRecordId
-    );
-    console.log(
-      `Marked ${connection.selectedPlatform} record ${record.targetRecordId} complete for order ${order.id}`
-    );
-  } catch (error) {
-    console.error(
-      `Failed to complete record ${record.targetRecordId} for order ${order.id}:`,
-      error
-    );
+      try {
+        await prisma.orderSyncRecord.updateMany({
+          where: { shopDomain: shop, shopifyOrderId: String(order.id) },
+          data: { syncStatus: "partially_fulfilled" }
+        });
+      } catch (dbErr) {
+        console.error("Failed to update OrderSyncRecord status to partially_fulfilled:", dbErr);
+      }
 
-    const hasRetryFeature = subscription.planName === "trial" || subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
-    if (hasRetryFeature) {
       logActivity(
         shop,
-        "sync_retried",
-        `Order #${orderNumber} fulfillment sync failed; retrying in 60 seconds...`,
+        "order_partially_fulfilled",
+        `Order #${orderNumber} partial fulfillment comment posted in ${platform === "clickup" ? "ClickUp" : platform === "monday" ? "Monday.com" : "Notion"}`,
         String(order.id),
         record.targetRecordId
       );
-      scheduleFulfillmentRetry(shop, String(order.id), record.targetRecordId, orderNumber);
-    } else {
+
+      record.syncStatus = "partially_fulfilled";
+    } catch (error) {
+      console.error(`Failed to post partial fulfillment comment for order ${order.id}:`, error);
+    }
+  }
+
+  // 3. Handle Refunded
+  if (order.financial_status === "refunded" && record.syncStatus !== "refunded") {
+    try {
+      try {
+        await adapter.postComment(record.targetRecordId, "💳 Shopify Order refund processed.");
+      } catch (commentErr) {
+        console.error("Failed to post refund comment:", commentErr);
+      }
+
+      try {
+        await prisma.orderSyncRecord.updateMany({
+          where: { shopDomain: shop, shopifyOrderId: String(order.id) },
+          data: { syncStatus: "refunded" }
+        });
+      } catch (dbErr) {
+        console.error("Failed to update OrderSyncRecord status to refunded:", dbErr);
+      }
+
       logActivity(
         shop,
-        "sync_failed",
-        `Order #${orderNumber} fulfillment sync failed: ${error.message}`,
+        "order_refunded",
+        `Order #${orderNumber} refund comment posted in ${platform === "clickup" ? "ClickUp" : platform === "monday" ? "Monday.com" : "Notion"}`,
         String(order.id),
         record.targetRecordId
       );
+
+      record.syncStatus = "refunded";
+    } catch (error) {
+      console.error(`Failed to post refund comment for order ${order.id}:`, error);
+    }
+  }
+  // 4. Handle Partially Refunded
+  else if (order.financial_status === "partially_refunded" && record.syncStatus !== "partially_refunded" && record.syncStatus !== "refunded") {
+    try {
+      try {
+        await adapter.postComment(record.targetRecordId, "💳 Shopify Order partial refund processed.");
+      } catch (commentErr) {
+        console.error("Failed to post partial refund comment:", commentErr);
+      }
+
+      try {
+        await prisma.orderSyncRecord.updateMany({
+          where: { shopDomain: shop, shopifyOrderId: String(order.id) },
+          data: { syncStatus: "partially_refunded" }
+        });
+      } catch (dbErr) {
+        console.error("Failed to update OrderSyncRecord status to partially_refunded:", dbErr);
+      }
+
+      logActivity(
+        shop,
+        "order_partially_refunded",
+        `Order #${orderNumber} partial refund comment posted in ${platform === "clickup" ? "ClickUp" : platform === "monday" ? "Monday.com" : "Notion"}`,
+        String(order.id),
+        record.targetRecordId
+      );
+
+      record.syncStatus = "partially_refunded";
+    } catch (error) {
+      console.error(`Failed to post partial refund comment for order ${order.id}:`, error);
     }
   }
 

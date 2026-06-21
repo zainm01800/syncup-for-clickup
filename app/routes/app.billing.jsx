@@ -1383,6 +1383,17 @@ export default function BillingPage() {
               const expirationDate = new Date(new Date(cycleStart).getTime() + durationDays * 24 * 60 * 60 * 1000);
               const expiryString = expirationDate.toLocaleDateString();
 
+              const remainingTrialDays = (() => {
+                if (subscription.planName === "trial" && subscription.trialEndDate) {
+                  const diffMs = new Date(subscription.trialEndDate).getTime() - Date.now();
+                  if (diffMs > 0) {
+                    return Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+                  }
+                }
+                return 0;
+              })();
+              const trialEndDateString = subscription.trialEndDate ? new Date(subscription.trialEndDate).toLocaleDateString() : "";
+
               const PLAN_LEVELS = {
                 free: 0,
                 trial: 0,
@@ -1494,9 +1505,12 @@ export default function BillingPage() {
                     </div>
                   ) : (
                     <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, margin: "0 0 24px 0" }}>
-                      {subscription.shopifyChargeStatus === "cancelled"
-                        ? `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts (Price: $${targetPrice.toFixed(2)}/${intervalText}).`
-                        : `You are switching to the ${targetPlan?.name || activeConfirmPlanKey} ($${targetPrice.toFixed(2)}/${intervalText}). This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`
+                      {currentPlanKey === "trial" && remainingTrialDays > 0
+                        ? `You are subscribing to the ${targetPlan?.name || activeConfirmPlanKey} ($${targetPrice.toFixed(2)}/${intervalText}). This plan will activate immediately with full features, and you will receive a free trial for your remaining ${remainingTrialDays} day(s) first. Your first billing cycle will start automatically on ${trialEndDateString} after your trial ends. You will not be billed until then.`
+                        : (subscription.shopifyChargeStatus === "cancelled"
+                            ? `You are scheduling the ${targetPlan?.name || activeConfirmPlanKey}. It will automatically activate when your current ${currentPlan?.name || currentPlanKey} expires on ${expiryString}. You will not be charged for this new plan until it starts (Price: $${targetPrice.toFixed(2)}/${intervalText}).`
+                            : `You are switching to the ${targetPlan?.name || activeConfirmPlanKey} ($${targetPrice.toFixed(2)}/${intervalText}). This new plan will start immediately. Shopify will calculate a prorated credit for any unused time on your current ${currentPlan?.name || currentPlanKey} and apply it to your next billing cycle.`
+                          )
                       }
                     </p>
                   )}

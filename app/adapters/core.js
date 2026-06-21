@@ -52,6 +52,10 @@ export class IntegrationAdapter {
     throw new Error("completeRecord() not implemented");
   }
 
+  async postComment() {
+    throw new Error("postComment() not implemented");
+  }
+
   async testConnection() {
     throw new Error("testConnection() not implemented");
   }
@@ -210,6 +214,13 @@ export class ClickUpAdapter extends IntegrationAdapter {
     await clickupRequest(`/task/${targetRecordId}`, this.apiToken, {
       method: "PUT",
       body: JSON.stringify({ status: "complete" }),
+    });
+  }
+
+  async postComment(targetRecordId, text) {
+    await clickupRequest(`/task/${targetRecordId}/comment`, this.apiToken, {
+      method: "POST",
+      body: JSON.stringify({ comment_text: text }),
     });
   }
 
@@ -494,6 +505,17 @@ export class MondayAdapter extends IntegrationAdapter {
     }
   }
 
+  async postComment(targetRecordId, text) {
+    const query = `
+      mutation ($itemId: ID!, $body: String!) {
+        create_update (item_id: $itemId, body: $body) {
+          id
+        }
+      }
+    `;
+    await this.graphql(query, { itemId: targetRecordId, body: text });
+  }
+
   async fetchTargets() {
     const query = `
       query {
@@ -717,6 +739,20 @@ export class NotionAdapter extends IntegrationAdapter {
           ],
         }),
       });
+    }
+  }
+
+  async postComment(targetRecordId, text) {
+    try {
+      await this.notionFetch("/comments", {
+        method: "POST",
+        body: JSON.stringify({
+          parent: { page_id: targetRecordId },
+          rich_text: [{ text: { content: text } }],
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to post comment to Notion page:", err);
     }
   }
 

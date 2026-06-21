@@ -347,6 +347,18 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
     chargedPrice = plan.regularPrice || plan.price;
   }
 
+  // Calculate remaining trial days if they are upgrading from the free trial
+  let trialDays = 0;
+  const currentSub = await prisma.subscription.findUnique({
+    where: { shopDomain: shop }
+  });
+  if (currentSub && currentSub.planName === "trial" && currentSub.trialEndDate) {
+    const diffMs = new Date(currentSub.trialEndDate).getTime() - Date.now();
+    if (diffMs > 0) {
+      trialDays = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+    }
+  }
+
   const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?shop=${encodeURIComponent(shop)}&activated=${planKey}&replacement_behavior=${replacementBehavior}`;
   const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
@@ -386,6 +398,7 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
               appRecurringPricingDetails: {
                 price: { amount: parseFloat(chargedPrice.toFixed(2)), currencyCode: "USD" },
                 interval: interval,
+                ...(trialDays > 0 ? { trialDays } : {}),
               },
             },
           },
@@ -432,6 +445,16 @@ export async function cancelExistingSubscription(admin, chargeId) {
 export async function activateSubscription(shop, planKey, chargeId) {
   const plan = PLANS[planKey];
   const now = new Date();
+
+  const currentSub = await prisma.subscription.findUnique({
+    where: { shopDomain: shop }
+  });
+
+  let billingCycleStart = now;
+  if (currentSub && currentSub.planName === "trial" && currentSub.trialEndDate && new Date(currentSub.trialEndDate) > now) {
+    billingCycleStart = new Date(currentSub.trialEndDate);
+  }
+
   // Lock in promo pricing for this merchant if the launch promo is still active
   // at the moment they activate. Once locked, they keep seeing promo prices even
   // after the global pool fills (see isPromoLocked on the Subscription model).
@@ -445,7 +468,7 @@ export async function activateSubscription(shop, planKey, chargeId) {
       shopifyChargeStatus: "active",
       isTrialActive: false,
       status: "active",
-      billingCycleStart: now,
+      billingCycleStart: billingCycleStart,
       annualBilling: plan.annual,
       pendingPlanName: null,
       pendingShopifyChargeId: null,
@@ -458,7 +481,7 @@ export async function activateSubscription(shop, planKey, chargeId) {
       shopifyChargeStatus: "active",
       isTrialActive: false,
       status: "active",
-      billingCycleStart: now,
+      billingCycleStart: billingCycleStart,
       annualBilling: plan.annual,
       trialStartDate: now,
       trialEndDate: now,

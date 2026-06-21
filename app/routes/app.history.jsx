@@ -121,10 +121,13 @@ function timeAgo(iso) {
 }
 
 const SC = {
-  synced:    { color: "#00c48c", bg: "rgba(0,196,140,0.12)", label: "Synced" },
-  fulfilled: { color: "#00c48c", bg: "rgba(0,196,140,0.12)", label: "Fulfilled" },
-  retrying:  { color: "#ff9900", bg: "rgba(255,153,0,0.12)", label: "Retrying" },
-  failed:    { color: "#ff4444", bg: "rgba(255,68,68,0.12)", label: "Failed" },
+  synced:              { color: "#00c48c", bg: "rgba(0,196,140,0.12)", label: "Synced" },
+  fulfilled:           { color: "#00c48c", bg: "rgba(0,196,140,0.12)", label: "Fulfilled" },
+  partially_fulfilled: { color: "#ff9900", bg: "rgba(255,153,0,0.12)", label: "Partially Fulfilled" },
+  partially_refunded:  { color: "#ff9900", bg: "rgba(255,153,0,0.12)", label: "Partially Refunded" },
+  refunded:            { color: "#ff4444", bg: "rgba(255,68,68,0.12)", label: "Refunded" },
+  retrying:            { color: "#ff9900", bg: "rgba(255,153,0,0.12)", label: "Retrying" },
+  failed:              { color: "#ff4444", bg: "rgba(255,68,68,0.12)", label: "Failed" },
 };
 
 export default function HistoryPage() {
