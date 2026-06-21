@@ -31,13 +31,15 @@ export const loader = async ({ request }) => {
 
   let lists = [];
   let listError = null;
+  let clickupFields = [];
+  let fieldMappings = null;
+  let latestOrder = null;
 
   let healthStatus = connection?.healthStatus || "healthy";
   if (connection?.accessToken) {
-    // Throttled connection health check (run at most once every 5 minutes)
+    // 1. Throttled connection health check (run at most once every 5 minutes in background)
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     if (!connection.lastHealthCheck || new Date(connection.lastHealthCheck) < fiveMinutesAgo) {
-      // Run health check in background to prevent blocking loader response and causing navigation latency
       (async () => {
         try {
           let healthy = false;
@@ -89,21 +91,145 @@ export const loader = async ({ request }) => {
       })();
     }
 
-    try {
-      const cacheKey = `${shop}:${connection.selectedPlatform}:${connection.accessToken}`;
-      const now = Date.now();
-      const cachedTargets = globalThis.apiCache.targets.get(cacheKey);
-      if (cachedTargets && (now - cachedTargets.timestamp < CACHE_TTL)) {
-        lists = cachedTargets.data;
+    // 2. Fetch targets, fields, and latest order concurrently (with caching)
+    const cacheKeyTargets = `${shop}:${connection.selectedPlatform}:${connection.accessToken}`;
+    const cacheKeyFields = `${shop}:${connection.selectedPlatform}:${connection.listId}:${connection.accessToken}`;
+    const cacheKeyOrder = `${shop}`;
+    const now = Date.now();
+
+    const cachedTargets = globalThis.apiCache.targets.get(cacheKeyTargets);
+    const cachedFields = globalThis.apiCache.fields.get(cacheKeyFields);
+    const cachedOrder = globalThis.apiCache.orders.get(cacheKeyOrder);
+
+    fieldMappings = connection.fieldMappings ? JSON.parse(connection.fieldMappings) : null;
+
+    const promises = [];
+
+    // Target Lists Fetch
+    if (cachedTargets && (now - cachedTargets.timestamp < CACHE_TTL)) {
+      lists = cachedTargets.data;
+    } else {
+      promises.push((async () => {
+        try {
+          const { IntegrationFactory } = await import("../adapters/factory");
+          const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
+          const data = await adapter.fetchTargets();
+          globalThis.apiCache.targets.set(cacheKeyTargets, { data, timestamp: now });
+          lists = data;
+        } catch (error) {
+          console.error(`Failed to load targets for ${shop}:`, error);
+          listError = `We couldn't load your resources from ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}. Try disconnecting and reconnecting.`;
+        }
+      })());
+    }
+
+    // Destination Fields Fetch
+    const isGrowthOrPro =
+      subscription.planName.startsWith("growth") ||
+      subscription.planName.startsWith("pro") ||
+      subscription.planName === "trial";
+
+    if (connection.listId && isGrowthOrPro) {
+      if (cachedFields && (now - cachedFields.timestamp < CACHE_TTL)) {
+        clickupFields = cachedFields.data;
       } else {
-        const { IntegrationFactory } = await import("../adapters/factory");
-        const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
-        lists = await adapter.fetchTargets();
-        globalThis.apiCache.targets.set(cacheKey, { data: lists, timestamp: now });
+        promises.push((async () => {
+          try {
+            const { IntegrationFactory } = await import("../adapters/factory");
+            const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
+            const data = await adapter.fetchFields(connection.listId);
+            globalThis.apiCache.fields.set(cacheKeyFields, { data, timestamp: now });
+            clickupFields = data;
+          } catch (e) {
+            console.error("Failed to load destination fields in loader:", e);
+          }
+        })());
       }
-    } catch (error) {
-      console.error(`Failed to load targets for ${shop}:`, error);
-      listError = `We couldn't load your resources from ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}. Try disconnecting and reconnecting.`;
+    }
+
+    // Shopify Latest Order Fetch
+    if (cachedOrder && (now - cachedOrder.timestamp < CACHE_TTL)) {
+      latestOrder = cachedOrder.data;
+    } else {
+      promises.push((async () => {
+        try {
+          const response = await admin.graphql(`#graphql
+            query GetLatestOrderForPreview {
+              orders(first: 1, reverse: true) {
+                nodes {
+                  id
+                  name
+                  totalPriceSet {
+                    presentmentMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  financialStatus
+                  createdAt
+                  customer {
+                    firstName
+                    lastName
+                    email
+                    phone
+                  }
+                  lineItems(first: 10) {
+                    nodes {
+                      id
+                      title
+                      quantity
+                      sku
+                    }
+                  }
+                  shippingLines(first: 1) {
+                    nodes {
+                      title
+                    }
+                  }
+                }
+              }
+            }
+          `);
+
+          const responseJson = await response.json();
+          const orderNode = responseJson.data?.orders?.nodes?.[0];
+          if (orderNode) {
+            const mappedOrder = {
+              id: orderNode.id.split("/").pop(),
+              order_number: orderNode.name.replace(/^#/, ""),
+              number: orderNode.name,
+              total_price: orderNode.totalPriceSet?.presentmentMoney?.amount || "0.00",
+              currency: orderNode.totalPriceSet?.presentmentMoney?.currencyCode || "USD",
+              created_at: orderNode.createdAt,
+              financial_status: orderNode.financialStatus?.toLowerCase() || "",
+              customer: orderNode.customer ? {
+                first_name: orderNode.customer.firstName || "",
+                last_name: orderNode.customer.lastName || "",
+                email: orderNode.customer.email || "",
+                phone: orderNode.customer.phone || "",
+                name: [orderNode.customer.firstName, orderNode.customer.lastName].filter(Boolean).join(" ")
+              } : null,
+              line_items: orderNode.lineItems?.nodes?.map(li => ({
+                id: li.id.split("/").pop(),
+                title: li.title,
+                quantity: li.quantity,
+                sku: li.sku || ""
+              })) || [],
+              shipping_lines: orderNode.shippingLines?.nodes?.map(sl => ({
+                title: sl.title
+              })) || []
+            };
+            globalThis.apiCache.orders.set(cacheKeyOrder, { data: mappedOrder, timestamp: now });
+            latestOrder = mappedOrder;
+          }
+        } catch (err) {
+          console.error("Failed to query latest Shopify order via GraphQL:", err);
+        }
+      })());
+    }
+
+    if (promises.length > 0) {
+      await Promise.all(promises);
     }
   }
 
@@ -136,7 +262,7 @@ export const loader = async ({ request }) => {
 
   // 2. Fetch last sync time
   const lastSyncRecord = await prisma.orderSyncRecord.findFirst({
-    where: { shopDomain: shop, syncStatus: { in: ["synced", "fulfilled"] } },
+    where: { shopDomain: shop, syncStatus: { in: ["synced", "fulfilled", "partially_fulfilled", "partially_refunded", "refunded"] } },
     orderBy: { createdAt: "desc" },
   });
   const lastSyncTime = lastSyncRecord ? lastSyncRecord.createdAt.toISOString() : null;
@@ -148,7 +274,7 @@ export const loader = async ({ request }) => {
     where: {
       shopDomain: shop,
       createdAt: { gte: startOfToday },
-      syncStatus: { in: ["synced", "fulfilled"] },
+      syncStatus: { in: ["synced", "fulfilled", "partially_fulfilled", "partially_refunded", "refunded"] },
     },
   });
 
@@ -160,119 +286,6 @@ export const loader = async ({ request }) => {
 
   const plan = PLANS[subscription.planName] || (subscription.planName === "trial" ? { name: "Free Trial", listLimit: 5 } : { name: "Expired/Cancelled", listLimit: 1 });
   const listLimit = plan.listLimit || 1;
-
-  let clickupFields = [];
-  let fieldMappings = null;
-
-  if (connection?.accessToken) {
-    fieldMappings = connection.fieldMappings ? JSON.parse(connection.fieldMappings) : null;
-    if (connection.listId) {
-      const isGrowthOrPro =
-        subscription.planName.startsWith("growth") ||
-        subscription.planName.startsWith("pro") ||
-        subscription.planName === "trial";
-      if (isGrowthOrPro) {
-        try {
-          const cacheKey = `${shop}:${connection.selectedPlatform}:${connection.listId}:${connection.accessToken}`;
-          const now = Date.now();
-          const cachedFields = globalThis.apiCache.fields.get(cacheKey);
-          if (cachedFields && (now - cachedFields.timestamp < CACHE_TTL)) {
-            clickupFields = cachedFields.data;
-          } else {
-            const { IntegrationFactory } = await import("../adapters/factory");
-            const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
-            clickupFields = await adapter.fetchFields(connection.listId);
-            globalThis.apiCache.fields.set(cacheKey, { data: clickupFields, timestamp: now });
-          }
-        } catch (e) {
-          console.error("Failed to load destination fields in loader:", e);
-        }
-      }
-    }
-  }
-
-  // Fetch latest Shopify order for real-time preview (with cache)
-  let latestOrder = null;
-  const orderCacheKey = `${shop}`;
-  const cachedOrder = globalThis.apiCache.orders?.get(orderCacheKey);
-  const now = Date.now();
-
-  if (cachedOrder && (now - cachedOrder.timestamp < CACHE_TTL)) {
-    latestOrder = cachedOrder.data;
-  } else {
-    try {
-      const response = await admin.graphql(`#graphql
-        query GetLatestOrderForPreview {
-          orders(first: 1, reverse: true) {
-            nodes {
-              id
-              name
-              totalPriceSet {
-                presentmentMoney {
-                  amount
-                  currencyCode
-                }
-              }
-              financialStatus
-              createdAt
-              customer {
-                firstName
-                lastName
-                email
-                phone
-              }
-              lineItems(first: 10) {
-                nodes {
-                  id
-                  title
-                  quantity
-                  sku
-                }
-              }
-              shippingLines(first: 1) {
-                nodes {
-                  title
-                }
-              }
-            }
-          }
-        }
-      `);
-
-      const responseJson = await response.json();
-      const orderNode = responseJson.data?.orders?.nodes?.[0];
-      if (orderNode) {
-        latestOrder = {
-          id: orderNode.id.split("/").pop(),
-          order_number: orderNode.name.replace(/^#/, ""),
-          number: orderNode.name,
-          total_price: orderNode.totalPriceSet?.presentmentMoney?.amount || "0.00",
-          currency: orderNode.totalPriceSet?.presentmentMoney?.currencyCode || "USD",
-          created_at: orderNode.createdAt,
-          financial_status: orderNode.financialStatus?.toLowerCase() || "",
-          customer: orderNode.customer ? {
-            first_name: orderNode.customer.firstName || "",
-            last_name: orderNode.customer.lastName || "",
-            email: orderNode.customer.email || "",
-            phone: orderNode.customer.phone || "",
-            name: [orderNode.customer.firstName, orderNode.customer.lastName].filter(Boolean).join(" ")
-          } : null,
-          line_items: orderNode.lineItems?.nodes?.map(li => ({
-            id: li.id.split("/").pop(),
-            title: li.title,
-            quantity: li.quantity,
-            sku: li.sku || ""
-          })) || [],
-          shipping_lines: orderNode.shippingLines?.nodes?.map(sl => ({
-            title: sl.title
-          })) || []
-        };
-        globalThis.apiCache.orders.set(orderCacheKey, { data: latestOrder, timestamp: now });
-      }
-    } catch (err) {
-      console.error("Failed to query latest Shopify order via GraphQL:", err);
-    }
-  }
 
   if (!latestOrder) {
     latestOrder = {
@@ -1493,6 +1506,11 @@ export default function Index() {
           {actionData?.saved && renderBanner("savedConnections", "✓ Connections and keyword routing saved successfully.", styles.successBanner)}
           {removedLists && renderBanner("removedLists", <span>⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong></span>, styles.warningBanner)}
           {(clickupError || actionData?.error) && renderBanner("actionError", clickupError || actionData?.error, styles.errorBanner)}
+          {healthStatus === "error" && renderBanner(
+            "healthError",
+            <span>⚠️ {selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} Connection Lost. Your API Token has expired or the target list was deleted. Please check your connections.</span>,
+            styles.errorBanner
+          )}
 
           {showFullPageUpgrade ? (
             /* SECTION 2 (Pricing cards) shown as full-page settings overlay */
