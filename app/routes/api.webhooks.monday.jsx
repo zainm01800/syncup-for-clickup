@@ -1,6 +1,7 @@
 const json = Response.json;
 import prisma from "../db.server";
 import { logActivity, findConnectionByWebhookSecret } from "../clickup.server";
+import { fulfillShopifyOrder } from "../fulfill.server";
 
 export const action = async ({ request }) => {
   if (request.method !== "POST") {
@@ -76,108 +77,26 @@ export const action = async ({ request }) => {
       return json({ ok: true, message: "Two-way sync is not enabled or supported by your current plan" });
     }
 
-    // Fulfill order in Shopify
-    const sessionRec = await prisma.session.findFirst({
-      where: { shop: record.shopDomain, isOnline: false }
-    });
-
-    if (!sessionRec?.accessToken) {
+    // Fulfill the order in Shopify via the shared routine.
+    const statusLabel = event.value?.label?.text || event.value?.text;
+    const result = await fulfillShopifyOrder(record.shopDomain, record.shopifyOrderId);
+    if (result.ok === false && result.error === "no_token") {
       return json({ error: "No Shopify access token found" }, { status: 400 });
     }
-
-    const shopifyAdminUrl = `https://${record.shopDomain}/admin/api/2024-01/graphql.json`;
-
-    // Fetch fulfillment orders
-    const getFulfillmentOrdersQuery = `
-      query getFulfillmentOrders($orderId: ID!) {
-        order(id: $orderId) {
-          fulfillmentOrders(first: 5) {
-            nodes {
-              id
-              status
-            }
-          }
-        }
-      }
-    `;
-
-    const getRes = await fetch(shopifyAdminUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": sessionRec.accessToken
-      },
-      body: JSON.stringify({
-        query: getFulfillmentOrdersQuery,
-        variables: { orderId: `gid://shopify/Order/${record.shopifyOrderId}` }
-      })
-    });
-
-    const getResJson = await getRes.json();
-    const nodes = getResJson.data?.order?.fulfillmentOrders?.nodes || [];
-    const openFulfillmentOrders = nodes.filter(fo => ["OPEN", "IN_PROGRESS"].includes(fo.status));
-
-    if (openFulfillmentOrders.length === 0) {
-      return json({ ok: true, message: "Order is already fulfilled or has no open fulfillment orders" });
-    }
-
-    // Fulfill open fulfillment orders
-    const fulfillMutation = `
-      mutation fulfillmentCreateV2($fulfillment: FulfillmentV2Input!) {
-        fulfillmentCreateV2(fulfillment: $fulfillment) {
-          fulfillment {
-            id
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }
-    `;
-
-    let hadUserErrors = false;
-    const collectedErrors = [];
-    for (const fo of openFulfillmentOrders) {
-      const fulfillRes = await fetch(shopifyAdminUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": sessionRec.accessToken
-        },
-        body: JSON.stringify({
-          query: fulfillMutation,
-          variables: {
-            fulfillment: {
-              lineItemsByFulfillmentOrder: [
-                {
-                  fulfillmentOrderId: fo.id,
-                  fulfillmentOrderLineItems: []
-                }
-              ]
-            }
-          }
-        })
-      });
-      const fulfillJson = await fulfillRes.json().catch(() => ({}));
-      const userErrors = fulfillJson?.data?.fulfillmentCreateV2?.userErrors || [];
-      if (userErrors.length > 0) {
-        hadUserErrors = true;
-        collectedErrors.push(...userErrors.map((e) => e.message));
-      }
-    }
-
-    if (hadUserErrors) {
-      console.error(`Fulfillment userErrors for order ${record.shopifyOrderId}:`, collectedErrors);
+    if (result.ok === false && result.error === "shopify_rejected") {
+      console.error(`Fulfillment userErrors for order ${record.shopifyOrderId}:`, result.details);
       await logActivity(
         record.shopDomain,
         "sync_failed",
-        `Monday.com marked item complete, but Shopify fulfillment failed for order #${record.orderNumber || record.shopifyOrderId}: ${collectedErrors.join("; ")}`
+        `Monday.com marked item complete, but Shopify fulfillment failed for order #${record.orderNumber || record.shopifyOrderId}: ${result.details.join("; ")}`
       );
-      return json({ ok: false, error: "Fulfillment rejected by Shopify", details: collectedErrors }, { status: 500 });
+      return json({ ok: false, error: "Fulfillment rejected by Shopify", details: result.details }, { status: 500 });
+    }
+    if (result.skipped === "no_open_orders") {
+      return json({ ok: true, message: "Order is already fulfilled or has no open fulfillment orders" });
     }
 
-    // Update status & log
+    // Fulfilled — update the mapping record and log.
     await prisma.orderSyncRecord.update({
       where: { id: record.id },
       data: { syncStatus: "fulfilled" }
@@ -186,7 +105,7 @@ export const action = async ({ request }) => {
     await logActivity(
       record.shopDomain,
       "order_fulfilled",
-      `Order #${record.orderNumber || record.shopifyOrderId} automatically fulfilled via Monday.com status change to '${event.value?.label?.text || event.value?.text}'.`
+      `Order #${record.orderNumber || record.shopifyOrderId} automatically fulfilled via Monday.com status change to '${statusLabel}'.`
     );
 
     return json({ ok: true, fulfilled: true });

@@ -393,16 +393,24 @@ async function syncToPlatformConnection({
       }
     });
 
-    await prisma.orderSyncRecord.create({
-      data: {
-        shopDomain,
-        shopifyOrderId: String(order.id),
-        syncTargetId: syncTarget.id,
-        targetRecordId: targetRecordId,
-        syncStatus: "synced",
-        orderNumber: orderNumber
-      }
-    });
+    try {
+      await prisma.orderSyncRecord.create({
+        data: {
+          shopDomain,
+          shopifyOrderId: String(order.id),
+          syncTargetId: syncTarget.id,
+          targetRecordId: targetRecordId,
+          syncStatus: "synced",
+          orderNumber: orderNumber
+        }
+      });
+    } catch (e) {
+      // P2002 (Prisma) / 23505 (native Postgres/Neon) = unique (shopifyOrderId,
+      // syncTargetId) already exists — a duplicate webhook/retry already synced
+      // this order to this target. Treat as success and don't re-count.
+      if (e?.code !== "P2002" && e?.code !== "23505") throw e;
+      return { success: true, skipped: true, reason: "duplicate" };
+    }
     await incrementAllTimeCount(shopDomain);
 
     // Tag the Shopify order

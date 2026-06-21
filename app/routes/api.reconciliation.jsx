@@ -25,12 +25,14 @@ async function handleReconciliation(request) {
     return Response.json({ ok: false, error: "Unauthorized access" }, { status: 401 });
   }
 
-  // 1.5 GDPR: Purge failed sync jobs older than 7 days to protect customer PII
+  // 1.5 GDPR: Purge stuck sync jobs older than 7 days to protect customer PII.
+  // Covers both "failed" and "waiting" (over-limit) jobs — both hold the full
+  // Shopify order payload (name, email, address) and must not linger.
   try {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const purgeResult = await prisma.syncJob.deleteMany({
       where: {
-        status: "failed",
+        status: { in: ["failed", "waiting"] },
         updatedAt: { lt: sevenDaysAgo }
       }
     });

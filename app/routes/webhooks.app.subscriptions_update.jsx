@@ -58,6 +58,16 @@ export const action = async ({ request }) => {
 
     const promoLocked = await isPromoActiveGlobally();
 
+    // Resolve safe billing cycle start date to prevent overwriting trial carry-overs or active cycles
+    let billingCycleStart = new Date();
+    if (sub) {
+      if (sub.shopifyChargeId === chargeId) {
+        billingCycleStart = sub.billingCycleStart || new Date();
+      } else if (sub.planName === "trial" && sub.trialEndDate && new Date(sub.trialEndDate) > new Date()) {
+        billingCycleStart = new Date(sub.trialEndDate);
+      }
+    }
+
     await prisma.subscription.upsert({
       where: { shopDomain: shop },
       update: {
@@ -66,7 +76,7 @@ export const action = async ({ request }) => {
         shopifyChargeStatus: "active",
         isTrialActive: false,
         status: "active",
-        billingCycleStart: new Date(),
+        billingCycleStart: billingCycleStart,
         annualBilling: plan.annual,
         pendingPlanName: null,
         pendingShopifyChargeId: null,
@@ -79,7 +89,7 @@ export const action = async ({ request }) => {
         shopifyChargeStatus: "active",
         isTrialActive: false,
         status: "active",
-        billingCycleStart: new Date(),
+        billingCycleStart: billingCycleStart,
         annualBilling: plan.annual,
         trialStartDate: new Date(),
         trialEndDate: new Date(),

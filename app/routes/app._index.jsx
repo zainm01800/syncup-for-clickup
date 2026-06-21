@@ -16,6 +16,16 @@ if (!globalThis.apiCache) {
   };
 }
 const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+const CACHE_MAX = 500; // bound per-map size so stale (pre-reconnect) keys can't leak memory
+
+// Bounded cache write: drops the oldest entry once a map reaches CACHE_MAX.
+function cacheSet(map, key, value) {
+  if (map.size >= CACHE_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -114,7 +124,7 @@ export const loader = async ({ request }) => {
           const { IntegrationFactory } = await import("../adapters/factory");
           const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
           const data = await adapter.fetchTargets();
-          globalThis.apiCache.targets.set(cacheKeyTargets, { data, timestamp: now });
+          cacheSet(globalThis.apiCache.targets, cacheKeyTargets, { data, timestamp: now });
           lists = data;
         } catch (error) {
           console.error(`Failed to load targets for ${shop}:`, error);
@@ -138,7 +148,7 @@ export const loader = async ({ request }) => {
             const { IntegrationFactory } = await import("../adapters/factory");
             const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
             const data = await adapter.fetchFields(connection.listId);
-            globalThis.apiCache.fields.set(cacheKeyFields, { data, timestamp: now });
+            cacheSet(globalThis.apiCache.fields, cacheKeyFields, { data, timestamp: now });
             clickupFields = data;
           } catch (e) {
             console.error("Failed to load destination fields in loader:", e);
@@ -219,7 +229,7 @@ export const loader = async ({ request }) => {
                 title: sl.title
               })) || []
             };
-            globalThis.apiCache.orders.set(cacheKeyOrder, { data: mappedOrder, timestamp: now });
+            cacheSet(globalThis.apiCache.orders, cacheKeyOrder, { data: mappedOrder, timestamp: now });
             latestOrder = mappedOrder;
           }
         } catch (err) {

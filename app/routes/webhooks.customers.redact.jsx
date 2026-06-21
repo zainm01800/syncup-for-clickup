@@ -9,12 +9,21 @@ export const action = async ({ request }) => {
   const orderIds = (payload?.orders_to_redact || []).map(String);
 
   if (orderIds.length > 0) {
-    await prisma.orderSyncRecord.deleteMany({
-      where: {
-        shopDomain: shop,
-        shopifyOrderId: { in: orderIds },
-      },
-    });
+    // Purge EVERY place a redacted customer's order data can live:
+    //  - orderSyncRecord: the order→task mapping
+    //  - syncJob: holds the full Shopify order JSON (name, email, address)
+    //  - activityLog: per-order history entries
+    await Promise.all([
+      prisma.orderSyncRecord.deleteMany({
+        where: { shopDomain: shop, shopifyOrderId: { in: orderIds } },
+      }),
+      prisma.syncJob.deleteMany({
+        where: { shopDomain: shop, shopifyOrderId: { in: orderIds } },
+      }),
+      prisma.activityLog.deleteMany({
+        where: { shopDomain: shop, shopifyOrderId: { in: orderIds } },
+      }),
+    ]);
   }
 
   console.log(
