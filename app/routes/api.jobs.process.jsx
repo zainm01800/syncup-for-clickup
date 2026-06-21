@@ -131,7 +131,7 @@ async function syncToPlatformConnection({
   paymentStatus,
   adminOrderUrl,
   assetLinks,
-  incrementOrderCount,
+  incrementAllTimeCount,
   logActivity,
   compileMarkdownTable,
   ClickUpAdapter,
@@ -403,7 +403,7 @@ async function syncToPlatformConnection({
         orderNumber: orderNumber
       }
     });
-    await incrementOrderCount(shopDomain);
+    await incrementAllTimeCount(shopDomain);
 
     // Tag the Shopify order
     try {
@@ -455,7 +455,7 @@ async function handleJobProcess(request) {
       logActivity,
       compileMarkdownTable,
     },
-    { getOrCreateSubscription, isSubscriptionActive, getInactiveReason, incrementOrderCount },
+    { getOrCreateSubscription, isSubscriptionActive, getInactiveReason, incrementAllTimeCount, tryReserveOrderSlot, releaseOrderSlot },
     { ClickUpAdapter, MondayAdapter, NotionAdapter }
   ] = await Promise.all([
     import("../db.server"),
@@ -520,6 +520,7 @@ async function handleJobProcess(request) {
       continue;
     }
 
+    let reservedSlot = false;
     try {
       const payload = JSON.parse(job.payload);
       const { shopDomain } = job;
@@ -571,6 +572,24 @@ async function handleJobProcess(request) {
       if (activeConnections.length === 0) {
         throw new Error(`No active platform connections configured for ${shopDomain}`);
       }
+
+      // Atomic monthly-limit reservation (race-free under bursts). For capped
+      // plans, increment the counter only if below the limit; if at the limit,
+      // park the job as "waiting" so it auto-retries when the counter resets.
+      // The conditional UPDATE serializes at the row level so concurrent jobs
+      // can't all pass and overshoot the cap.
+      if (!(await tryReserveOrderSlot(shopDomain))) {
+        await prisma.syncJob.update({
+          where: { id: job.id },
+          data: {
+            status: "waiting",
+            lastError: "Monthly order limit reached — will auto-sync when the plan resets",
+          },
+        });
+        results.push({ jobId: job.id, success: false, skipped: true, reason: "monthly_limit" });
+        continue;
+      }
+      reservedSlot = true;
 
       const order = payload;
       const orderNumber = String(order.order_number ?? order.number ?? order.id);
@@ -643,7 +662,7 @@ async function handleJobProcess(request) {
           paymentStatus,
           adminOrderUrl,
           assetLinks,
-          incrementOrderCount,
+          incrementAllTimeCount,
           logActivity,
           compileMarkdownTable,
           ClickUpAdapter,
@@ -677,6 +696,14 @@ async function handleJobProcess(request) {
 
     } catch (err) {
       console.error(`Sync Job ${job.id} failed:`, err);
+      // Release the reserved monthly slot so failed orders don't consume quota.
+      if (reservedSlot) {
+        try {
+          await releaseOrderSlot(job.shopDomain);
+        } catch (e) {
+          console.error("Failed to release order slot:", e);
+        }
+      }
       await prisma.syncJob.update({
         where: { id: job.id },
         data: {

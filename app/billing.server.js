@@ -160,13 +160,52 @@ export async function getOrCreateSubscription(shop) {
   return sub;
 }
 
-export async function incrementOrderCount(shop) {
+// Increment only the all-time counter on a successful sync. The monthly counter
+// is managed atomically by tryReserveOrderSlot/releaseOrderSlot so burst orders
+// can't exceed the plan's monthly limit (a read-then-increment in the job loop
+// would race under concurrency).
+export async function incrementAllTimeCount(shop) {
   await prisma.subscription.update({
     where: { shopDomain: shop },
     data: {
-      ordersSyncedThisMonth: { increment: 1 },
       ordersSyncedAllTime: { increment: 1 },
     },
+  });
+}
+
+// Atomically reserve one monthly-order slot. Returns true if reserved, false if
+// the shop is at its monthly cap. For capped plans the conditional UPDATE
+// serializes at the row level so concurrent jobs can't overshoot the limit.
+// Unlimited (Pro) and trial plans have no cap, so they always succeed — but we
+// still increment the counter so the merchant's "synced this month" metric is
+// accurate. Pair every successful reserve with releaseOrderSlot on failure, and
+// with incrementAllTimeCount on success.
+export async function tryReserveOrderSlot(shop) {
+  const sub = await prisma.subscription.findUnique({ where: { shopDomain: shop } });
+  if (!sub) return true;
+  const plan = PLANS[sub.planName];
+  const isCapped = sub.planName !== "trial" && plan && plan.monthlyOrderLimit !== null;
+  if (!isCapped) {
+    // Unlimited / trial: no cap to enforce, but still count the sync.
+    await prisma.subscription.update({
+      where: { shopDomain: shop },
+      data: { ordersSyncedThisMonth: { increment: 1 } },
+    });
+    return true;
+  }
+  const result = await prisma.subscription.updateMany({
+    where: { shopDomain: shop, ordersSyncedThisMonth: { lt: plan.monthlyOrderLimit } },
+    data: { ordersSyncedThisMonth: { increment: 1 } },
+  });
+  return result.count > 0;
+}
+
+// Release a previously-reserved slot when a sync fails, so failed orders don't
+// consume monthly quota. Guarded so it can never push the counter below 0.
+export async function releaseOrderSlot(shop) {
+  await prisma.subscription.updateMany({
+    where: { shopDomain: shop, ordersSyncedThisMonth: { gt: 0 } },
+    data: { ordersSyncedThisMonth: { decrement: 1 } },
   });
 }
 
