@@ -767,3 +767,94 @@ export async function registerMondayWebhook(boardId, token, webhookSecret) {
   }
 }
 
+export function getNotionAuthUrl(state) {
+  const params = new URLSearchParams({
+    client_id: process.env.NOTION_CLIENT_ID || "",
+    response_type: "code",
+    owner: "user",
+    redirect_uri: `${process.env.SHOPIFY_APP_URL}/auth/notion/callback`,
+    state,
+  });
+  return `https://api.notion.com/v1/oauth/authorize?${params.toString()}`;
+}
+
+export async function exchangeNotionCode(code) {
+  const redirectUri = `${process.env.SHOPIFY_APP_URL}/auth/notion/callback`;
+  const clientId = process.env.NOTION_CLIENT_ID || "";
+  const clientSecret = process.env.NOTION_CLIENT_SECRET || "";
+
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+  const response = await fetch("https://api.notion.com/v1/oauth/token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basicAuth}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Notion token exchange failed (${response.status}): ${body}`);
+  }
+
+  const data = await response.json();
+  if (!data.access_token) {
+    throw new Error("Notion token exchange did not return an access_token");
+  }
+  return {
+    accessToken: data.access_token,
+    workspaceId: data.workspace_id,
+    workspaceName: data.workspace_name || "Notion Workspace",
+  };
+}
+
+export async function saveNotionToken(shop, accessToken, workspaceId, workspaceName = null) {
+  const encryptedToken = await encryptToken(accessToken);
+  const webhookSecret = generateWebhookSecret();
+
+  const conn = await prisma.platformConnection.upsert({
+    where: {
+      shopDomain_provider: {
+        shopDomain: shop,
+        provider: "NOTION",
+      },
+    },
+    update: {
+      encryptedAccessToken: encryptedToken,
+      isActive: true,
+      webhookSecret,
+    },
+    create: {
+      shopDomain: shop,
+      provider: "NOTION",
+      encryptedAccessToken: encryptedToken,
+      isActive: true,
+      webhookSecret,
+    },
+  });
+
+  await prisma.notionMetadata.upsert({
+    where: { connectionId: conn.id },
+    update: {
+      workspaceId: workspaceId || "notion_default",
+      workspaceName: workspaceName || "Notion Workspace",
+      fieldMappings: "[]",
+    },
+    create: {
+      connectionId: conn.id,
+      workspaceId: workspaceId || "notion_default",
+      workspaceName: workspaceName || "Notion Workspace",
+      fieldMappings: "[]",
+    },
+  });
+
+  return conn;
+}
+
+

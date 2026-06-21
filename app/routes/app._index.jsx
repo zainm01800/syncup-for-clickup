@@ -478,8 +478,8 @@ export const action = async ({ request }) => {
   if (intent === "connect_platform") {
     const platform = formData.get("platform");
     const token = formData.get("token");
-    if (platform === "monday" || platform === "notion") {
-      return { ok: false, error: `${platform === "monday" ? "Monday.com" : "Notion"} integration is coming soon.` };
+    if (platform === "monday") {
+      return { ok: false, error: "Monday.com integration is coming soon." };
     }
     if (!token) {
       return { ok: false, error: "API token is required." };
@@ -686,7 +686,8 @@ export const action = async ({ request }) => {
       logActivity(shop, "order_synced", `Sent test record (Order #${mockOrderNumber}) to ${connection.selectedPlatform === "clickup" ? "ClickUp" : connection.selectedPlatform === "monday" ? "Monday.com" : "Notion"}`);
       return { ok: true, sentTestTask: true };
     } catch (e) {
-      return { ok: false, error: "We couldn't create the test task. Your selected list/board may have been moved or deleted." };
+      console.error("Test task creation failed:", e);
+      return { ok: false, error: `We couldn't create the test task: ${e.message}` };
     }
   }
 
@@ -1002,6 +1003,54 @@ export default function Index() {
     setDismissedBanners({});
   }, [actionData]);
 
+  // 1. Handle query parameter notifications via native App Bridge Toast
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    let dirty = false;
+
+    if (url.searchParams.get("billing_success") === "1") {
+      window.shopify?.toast?.show("Plan updated successfully", { duration: 3000 });
+      url.searchParams.delete("billing_success");
+      dirty = true;
+    }
+    if (url.searchParams.get("clickup_error")) {
+      const err = url.searchParams.get("clickup_error");
+      window.shopify?.toast?.show(err || "ClickUp connection error", { duration: 5000, isError: true });
+      url.searchParams.delete("clickup_error");
+      dirty = true;
+    }
+    if (url.searchParams.get("removed_lists")) {
+      const removed = url.searchParams.get("removed_lists");
+      window.shopify?.toast?.show(`Downgraded plan. Extra connections removed: ${removed}`, { duration: 5000, isError: true });
+      url.searchParams.delete("removed_lists");
+      dirty = true;
+    }
+
+    if (dirty) {
+      window.history.replaceState({}, document.title, url.pathname + url.search);
+    }
+  }, []);
+
+  // 2. Handle actionData notifications via native App Bridge Toast
+  useEffect(() => {
+    if (!actionData) return;
+    if (actionData.sentTestTask) {
+      window.shopify?.toast?.show(`Test task sent to connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`, { duration: 3000 });
+    }
+    if (actionData.retriedAllFailed) {
+      window.shopify?.toast?.show(`Re-enqueued ${actionData.retriedCount} failed jobs.`, { duration: 3000 });
+    }
+    if (actionData.savedSettings) {
+      window.shopify?.toast?.show("Sync settings saved successfully", { duration: 3000 });
+    }
+    if (actionData.saved) {
+      window.shopify?.toast?.show("Connections and keyword routing saved successfully", { duration: 3000 });
+    }
+    if (actionData.error) {
+      window.shopify?.toast?.show(actionData.error, { duration: 5000, isError: true });
+    }
+  }, [actionData, selectedPlatform]);
+
   const renderBanner = (key, content, style) => {
     if (dismissedBanners[key]) return null;
     return (
@@ -1221,6 +1270,8 @@ export default function Index() {
           clickupFieldId: field.id,
           clickupFieldName: field.name,
           clickupFieldType: field.type,
+          mondayColumnId: field.id,
+          notionPropertyId: field.id,
         });
       }
     });
@@ -1508,14 +1559,7 @@ export default function Index() {
             </div>
           )}
 
-          {/* Action/Success Banners */}
-          {billingSuccess && renderBanner("billingSuccess", "✓ Your plan has been updated successfully.", styles.successBanner)}
-          {actionData?.sentTestTask && renderBanner("sentTestTask", `✓ Test task successfully sent! Check your connected ${selectedPlatform === "clickup" ? "ClickUp list" : selectedPlatform === "monday" ? "Monday board" : "Notion database"}.`, styles.successBanner)}
-          {actionData?.retriedAllFailed && renderBanner("retriedAllFailed", `✓ Successfully re-enqueued ${actionData.retriedCount} failed sync job(s) for processing.`, styles.successBanner)}
-          {actionData?.savedSettings && renderBanner("savedSettings", "✓ Sync settings saved successfully.", styles.successBanner)}
-          {actionData?.saved && renderBanner("savedConnections", "✓ Connections and keyword routing saved successfully.", styles.successBanner)}
-          {removedLists && renderBanner("removedLists", <span>⚠️ Downgraded to Standard plan. The following extra list connections were removed: <strong>{removedLists}</strong></span>, styles.warningBanner)}
-          {(clickupError || actionData?.error) && renderBanner("actionError", clickupError || actionData?.error, styles.errorBanner)}
+          {/* Action/Success notifications are now handled natively via App Bridge Toast */}
           {healthStatus === "error" && renderBanner(
             "healthError",
             <span>⚠️ {selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion"} Connection Lost. Your API Token has expired or the target list was deleted. Please check your connections.</span>,
@@ -1769,7 +1813,8 @@ export default function Index() {
                           type="button"
                           className="su-platform-card notion"
                           onClick={() => {
-                            setComingSoonPlatform("Notion");
+                            setSelectedTool("notion");
+                            setWizardStep("connect");
                           }}
                           style={{ background: "none", width: "100%", outline: "none", color: "inherit", font: "inherit", border: `1px solid ${C.border}` }}
                         >
@@ -1782,7 +1827,7 @@ export default function Index() {
                             </div>
                             <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Notion</span>
                           </div>
-                          <span className="su-platform-badge coming-soon">Coming Soon</span>
+                          <span className="su-platform-badge live">Live</span>
                         </button>
                       </div>
                     </section>
@@ -1988,24 +2033,16 @@ export default function Index() {
                         </section>
                       )}
 
-                      {/* Monday.com / Notion active connection forms */}
-                      {(selectedTool === "monday" || selectedTool === "notion") && (
+                      {/* Monday.com active connection form */}
+                      {selectedTool === "monday" && (
                         <section style={styles.card}>
                           <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>
-                            Connect {selectedTool === "monday" ? "Monday.com" : "Notion"}
+                            Connect Monday.com
                           </h2>
                           
                           <p style={styles.cardText}>
-                            {selectedTool === "monday"
-                              ? "Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration > API."
-                              : "Enter your Notion Integration Token to connect your account. You can create an integration token at developers.notion.com/my-integrations."}
+                            Enter your Monday.com Personal Access Token to connect your account. You can find this token in your Monday.com account under Administration &rarr; API.
                           </p>
-
-                          {selectedTool === "notion" && (
-                            <div style={{ ...styles.errorBanner, background: "rgba(150,150,150,0.08)", color: "#cfcfcc", marginTop: 12 }}>
-                              Note: Notion sync is one-way. Orders are sent to Notion, but completing a Notion page will not auto-fulfill the Shopify order.
-                            </div>
-                          )}
 
                           {actionData?.error && (
                             <div style={{ ...styles.errorBanner, marginTop: 12, marginBottom: 12 }}>
@@ -2018,15 +2055,15 @@ export default function Index() {
                             <input type="hidden" name="platform" value={selectedTool} />
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <label style={styles.formLabel} htmlFor="platform_token">
-                                {selectedTool === "monday" ? "Monday.com Personal Access Token" : "Notion Integration Token"}{" "}
-                                <InfoTooltip text={selectedTool === "monday" ? "A secure personal access token generated from your Monday.com developer settings." : "A secure integration token generated from your Notion developer settings."} />
+                                Monday.com Personal Access Token{" "}
+                                <InfoTooltip text="A secure personal access token generated from your Monday.com developer settings." />
                               </label>
                               <input
                                 id="platform_token"
                                 name="token"
                                 type="password"
                                 required
-                                placeholder={selectedTool === "monday" ? "e.g. eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." : "e.g. secret_abc123xyz..."}
+                                placeholder="e.g. eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                                 style={styles.input}
                               />
                             </div>
@@ -2035,9 +2072,182 @@ export default function Index() {
                               style={{ ...styles.primaryButton, width: "100%", marginTop: 12 }}
                               disabled={isSubmitting}
                             >
-                              {isSubmitting ? "Connecting..." : `Connect ${selectedTool === "monday" ? "Monday.com" : "Notion"}`}
+                              {isSubmitting ? "Connecting..." : "Connect Monday.com"}
                             </button>
                           </Form>
+                        </section>
+                      )}
+
+                      {/* Notion configuration and billing (OAuth) */}
+                      {selectedTool === "notion" && (
+                        <section style={styles.card}>
+                          <h2 style={{ ...styles.cardTitle, marginTop: 0 }}>Connect Notion Workspace</h2>
+                          
+                          {!isTrialOrSubscriptionActive ? (
+                            <div>
+                              <p style={{ ...styles.cardText, marginBottom: 24 }}>
+                                SyncUp has paused connection setup because you do not have an active subscription. Choose a plan below to unlock Notion connection and start syncing.
+                              </p>
+
+                              {/* Toggle */}
+                              <div className="flex justify-center items-center gap-3 mb-8">
+                                <span className={`text-xs font-semibold transition-colors duration-200 ${billingInterval === "monthly" ? "text-zinc-100" : "text-zinc-500"}`}>
+                                  Monthly Billing
+                                </span>
+                                <button
+                                  type="button"
+                                  className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none bg-zinc-800"
+                                  onClick={() => setBillingInterval(billingInterval === "monthly" ? "annual" : "monthly")}
+                                  role="switch"
+                                  aria-checked={billingInterval === "annual"}
+                                >
+                                  <span
+                                    aria-hidden="true"
+                                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-emerald-400 shadow ring-0 transition duration-200 ease-in-out ${
+                                      billingInterval === "annual" ? "translate-x-5" : "translate-x-0"
+                                    }`}
+                                  />
+                                </button>
+                                <span className={`text-xs font-semibold transition-colors duration-200 ${billingInterval === "annual" ? "text-emerald-400" : "text-zinc-500"}`}>
+                                  Annual Billing <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold ml-1 border border-emerald-400/20">Save ~30%</span>
+                                </span>
+                              </div>
+
+                              {/* Pricing Cards Grid */}
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+                                {["standard", "growth", "pro"].map((key) => {
+                                  const planKey = `${key}_${billingInterval}`;
+                                  const plan = PLANS[planKey];
+                                  if (!plan) return null;
+                                  const isHighlighted = key === "growth";
+                                  
+                                  const overlayBadges = {
+                                    standard: "Best for Starters",
+                                    growth: "Most Popular",
+                                    pro: "Concierge Setup Included",
+                                  };
+
+                                  const monthlyPlan = PLANS[`${key}_monthly`];
+                                  const annualPlan = PLANS[`${key}_annual`];
+
+                                  const displayPrice = billingInterval === "annual"
+                                    ? `$${(annualPlan.price / 12).toFixed(2)}/mo`
+                                    : `$${monthlyPlan.price.toFixed(2)}/mo`;
+
+                                  const regularPrice = billingInterval === "annual"
+                                    ? (annualPlan.regularPrice ? `$${annualPlan.regularPrice.toFixed(2)}` : null)
+                                    : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}` : null);
+
+                                  const billedDesc = billingInterval === "annual"
+                                    ? `Billed annually as $${annualPlan.price}`
+                                    : null;
+
+                                  return (
+                                    <div
+                                      key={key}
+                                      className={`bg-zinc-950/45 border rounded-2xl p-6 flex flex-col justify-between transition-all duration-300 relative ${
+                                        isHighlighted 
+                                          ? "border-emerald-500/40 shadow-xl shadow-emerald-950/15 hover:border-emerald-500/60" 
+                                          : "border-zinc-800 hover:border-zinc-700"
+                                      }`}
+                                      style={{ border: isHighlighted ? "1px solid rgba(16, 185, 129, 0.4)" : `1px solid ${C.border}`, background: "#0f0f0f" }}
+                                    >
+                                      {isHighlighted && (
+                                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-zinc-950 text-[10px] font-black uppercase tracking-wider px-3.5 py-1 rounded-full shadow-lg shadow-emerald-500/20">
+                                          {overlayBadges[key]}
+                                        </div>
+                                      )}
+
+                                      <div>
+                                        <div className="mb-4">
+                                          <span className="text-zinc-500 text-[10px] font-semibold tracking-wider uppercase block mb-1">
+                                            {key} tier
+                                          </span>
+                                          <h3 className="text-base font-bold text-white tracking-tight">{plan.name}</h3>
+                                        </div>
+
+                                        {/* Price */}
+                                        <div className="mb-6">
+                                          <div className="flex items-baseline flex-wrap gap-1">
+                                            {regularPrice && (
+                                              <span className="text-xs text-zinc-500 line-through mr-1 font-medium">
+                                                {regularPrice}
+                                              </span>
+                                            )}
+                                            <span className="text-2xl font-extrabold text-white tracking-tight">
+                                              {displayPrice.split("/")[0]}
+                                            </span>
+                                            <span className="text-zinc-400 text-xs font-medium">
+                                              /{displayPrice.split("/")[1]}
+                                            </span>
+                                          </div>
+
+                                          {/* Annual details */}
+                                          {billingInterval === "annual" && billedDesc && (
+                                            <div className="text-[10px] text-zinc-400 mt-1.5 font-medium flex items-center gap-1">
+                                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                              {billedDesc} (${(monthlyPlan.price).toFixed(2)}/mo equivalent)
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* Divider */}
+                                        <div className="h-px bg-zinc-800/80 mb-5" style={{ background: C.border }}></div>
+
+                                        {/* Features translated dynamically */}
+                                        <ul className="space-y-3 mb-6 text-xs text-zinc-300" style={{ listStyle: "none", padding: 0 }}>
+                                          {getTranslatedFeatures(plan.features, "notion").map((feat) => (
+                                            <li key={feat} className="flex items-start">
+                                              <span className="text-emerald-400 mr-2 flex-shrink-0 font-bold">✓</span>
+                                              <span className="leading-snug">{feat}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+
+                                      {/* Submit action */}
+                                      <Link
+                                        to={`/app/billing?platform=notion`}
+                                        className={`w-full py-2.5 rounded-xl text-xs font-bold text-center block transition-all duration-200 hover:scale-[1.02] cursor-pointer ${
+                                          isHighlighted
+                                            ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold shadow-lg shadow-emerald-500/10"
+                                            : "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 hover:border-zinc-600"
+                                        }`}
+                                        style={{
+                                          border: isHighlighted ? "none" : `1px solid ${C.border}`,
+                                          background: isHighlighted ? C.accent : "#1a1a1a",
+                                          color: isHighlighted ? "#03251c" : C.text,
+                                          width: "100%",
+                                          textDecoration: "none"
+                                        }}
+                                      >
+                                        Select {plan.name.split(" ")[0]}
+                                      </Link>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <p style={styles.cardText}>
+                                Connect Notion to start syncing new orders into a database of your choice. New orders become database pages, and fulfilled orders get marked complete — automatically.
+                              </p>
+                              
+                              <div style={{ ...styles.errorBanner, background: "rgba(150,150,150,0.08)", color: "#cfcfcc", marginTop: 12, marginBottom: 20 }}>
+                                Note: Notion sync is one-way. Orders are sent to Notion, but completing a Notion page will not auto-fulfill the Shopify order.
+                              </div>
+
+                              <a
+                                href={`/auth/notion?state=${encodeURIComponent(clickupConnectState)}`}
+                                target="_top"
+                                style={{ ...styles.primaryButton, display: "inline-flex", alignItems: "center", gap: 8 }}
+                              >
+                                <span>Connect Notion</span>
+                                <span style={{ fontSize: 11 }}>&rarr;</span>
+                              </a>
+                            </>
+                          )}
                         </section>
                       )}
                     </div>
@@ -2795,6 +3005,8 @@ export default function Index() {
                                                       clickupFieldId: field.id,
                                                       clickupFieldName: field.name,
                                                       clickupFieldType: field.type,
+                                                      mondayColumnId: field.id,
+                                                      notionPropertyId: field.id,
                                                     },
                                                   ];
                                                 });

@@ -309,6 +309,37 @@ export default function BillingPage() {
     setUpgradeTiming("APPLY_IMMEDIATELY");
   }, [activeConfirmPlanKey]);
 
+  // Handle redirect query parameter notifications natively via App Bridge Toast
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    let dirty = false;
+
+    if (url.searchParams.get("billing_success") === "1") {
+      const isScheduled = url.searchParams.get("scheduled") === "1";
+      const schedPlan = url.searchParams.get("scheduled_plan");
+      if (isScheduled && schedPlan) {
+        window.shopify?.toast?.show(`Plan "${schedPlan}" scheduled successfully`, { duration: 4000 });
+      } else {
+        window.shopify?.toast?.show("Plan updated successfully", { duration: 3000 });
+      }
+      url.searchParams.delete("billing_success");
+      url.searchParams.delete("scheduled");
+      url.searchParams.delete("scheduled_plan");
+      dirty = true;
+    }
+
+    if (dirty) {
+      window.history.replaceState({}, document.title, url.pathname + url.search);
+    }
+  }, []);
+
+  // Handle actionData errors natively via App Bridge Toast
+  useEffect(() => {
+    if (actionData?.error) {
+      window.shopify?.toast?.show(actionData.error, { duration: 5000, isError: true });
+    }
+  }, [actionData]);
+
   const currentPlanKey = subscription?.planName || "trial";
 
   const planSpecs = {
@@ -641,23 +672,7 @@ export default function BillingPage() {
           </div>
         )}
 
-        {actionData?.error && (
-          <div style={{
-            background: "rgba(255, 68, 68, 0.08)",
-            border: "1px solid rgba(255, 68, 68, 0.2)",
-            color: "#ff4444",
-            padding: 16,
-            borderRadius: 12,
-            fontSize: 14,
-            marginBottom: 32,
-            maxWidth: 896,
-            marginLeft: "auto",
-            marginRight: "auto",
-            boxSizing: "border-box"
-          }}>
-            ✕ {actionData.error}
-          </div>
-        )}
+        {/* Action errors are handled natively via App Bridge Toast */}
 
         {actionData?.confirmationUrl && (
           <div style={{

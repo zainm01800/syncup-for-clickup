@@ -151,6 +151,7 @@ model MondayMetadata {
   connectionId  String             @unique @map("connection_id")
   connection    PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   workspaceId   String             @map("workspace_id")
+  workspaceName String?            @map("workspace_name")
   fieldMappings String?            @map("field_mappings")
 
   @@map("monday_metadata")
@@ -161,6 +162,7 @@ model NotionMetadata {
   connectionId  String             @unique @map("connection_id")
   connection    PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   workspaceId   String             @map("workspace_id")
+  workspaceName String?            @map("workspace_name")
   fieldMappings String?            @map("field_mappings")
 
   @@map("notion_metadata")

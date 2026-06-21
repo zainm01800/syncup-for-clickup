@@ -200,7 +200,13 @@ export default function HistoryPage() {
           </div>
 
           {records.length === 0 ? (
-            <div style={{ padding: 40, textAlign: "center", color: C.muted, fontSize: 13 }}>No activity logs found.</div>
+            <div style={{ padding: "48px 24px", textAlign: "center", background: C.surface, borderRadius: 12, border: "1px dashed " + C.border, margin: 20 }}>
+              <span style={{ fontSize: 32, marginBottom: 12, display: "block" }}>📋</span>
+              <h3 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: C.text }}>No activity logged yet</h3>
+              <p style={{ margin: 0, fontSize: 13, color: C.muted, maxWidth: 400, marginLeft: "auto", marginRight: "auto", lineHeight: "1.5" }}>
+                Your sync history will show up here once an order is created or fulfilled. You can create a draft order in Shopify to test the flow!
+              </p>
+            </div>
           ) : (
             records.map((r) => {
               const sc = SC[r.syncStatus] || SC.synced;

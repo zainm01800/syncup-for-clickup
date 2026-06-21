@@ -356,6 +356,15 @@ export class MondayAdapter extends IntegrationAdapter {
     return data.data;
   }
 
+  async testConnection() {
+    try {
+      await this.graphql("{ me { id } }");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   formatFieldForMonday(value, type) {
     if (value === null || value === undefined) return null;
     const stringVal = String(value).trim();
@@ -582,9 +591,23 @@ export class NotionAdapter extends IntegrationAdapter {
     return res.json();
   }
 
+  async testConnection() {
+    try {
+      await this.notionFetch("/users/me");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async createRecord(targetResourceId, { name, description, rawOrder, customerName, shippingCost, fieldMappings, subtasks, attachments }) {
+    // 1. Fetch database properties to locate the primary title property key and check property existence/types
+    const dbDef = await this.notionFetch(`/databases/${targetResourceId}`);
+    const propertiesDef = dbDef.properties || {};
+    const titleKey = Object.keys(propertiesDef).find(k => propertiesDef[k]?.type === "title") || "Name";
+
     const properties = {
-      Name: {
+      [titleKey]: {
         title: [
           { text: { content: name } },
         ],
@@ -604,8 +627,17 @@ export class NotionAdapter extends IntegrationAdapter {
         const rawVal = orderValues[mapping.shopifySourceField];
         if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== "") {
           const propId = mapping.notionPropertyId || mapping.clickupFieldId;
-          const type = (mapping.notionPropertyType || "rich_text").toLowerCase();
-          if (type === "number") {
+          const propDef = propertiesDef[propId];
+          if (!propDef) continue; // Skip mapping if the column doesn't exist in Notion database
+
+          const type = (propDef.type || "rich_text").toLowerCase();
+          if (type === "title" || propId === titleKey) {
+            properties[propId] = {
+              title: [
+                { text: { content: String(rawVal) } },
+              ],
+            };
+          } else if (type === "number") {
             properties[propId] = { number: parseFloat(String(rawVal).replace(/[^0-9.-]/g, "")) };
           } else if (type === "email") {
             properties[propId] = { email: String(rawVal) };
@@ -615,6 +647,10 @@ export class NotionAdapter extends IntegrationAdapter {
             properties[propId] = { url: String(rawVal) };
           } else if (type === "checkbox") {
             properties[propId] = { checkbox: rawVal === "true" || rawVal === "1" || rawVal === true };
+          } else if (type === "select" || type === "status") {
+            properties[propId] = { [type]: { name: String(rawVal) } };
+          } else if (type === "multi_select") {
+            properties[propId] = { multi_select: [{ name: String(rawVal) }] };
           } else {
             properties[propId] = { rich_text: [{ text: { content: String(rawVal) } }] };
           }
@@ -637,6 +673,12 @@ export class NotionAdapter extends IntegrationAdapter {
         }
       }
     }
+
+    console.log("NOTION SYNC REQUEST payload:", JSON.stringify({
+      parent: { database_id: targetResourceId },
+      properties,
+      children: children.length > 0 ? children.slice(0, 100) : undefined,
+    }, null, 2));
 
     const page = await this.notionFetch("/pages", {
       method: "POST",
