@@ -74,12 +74,15 @@ async function handleReconciliation(request) {
 
     // 2. Loop through eligible shops sequentially
     for (const shopDomain of shopsToProcess) {
+      const shopResult = { shop: shopDomain, success: true };
+      
       try {
-        const result = await reconcileShopStorefront(shopDomain);
-        summary.push({ shop: shopDomain, ...result });
+        const reconResult = await reconcileShopStorefront(shopDomain);
+        Object.assign(shopResult, reconResult);
       } catch (shopErr) {
         console.error(`Reconciliation failed for ${shopDomain}:`, shopErr);
-        summary.push({ shop: shopDomain, success: false, error: shopErr.message });
+        shopResult.success = false;
+        shopResult.error = shopErr.message;
         
         // Mark integration health as degraded to notify the merchant via the UI
         await prisma.platformConnection.updateMany({
@@ -87,6 +90,14 @@ async function handleReconciliation(request) {
           data: { healthStatus: "degraded", lastHealthCheck: new Date() }
         });
       }
+
+      try {
+        await pollNotionFulfillments(shopDomain);
+      } catch (notionErr) {
+        console.error(`Notion polling failed for ${shopDomain}:`, notionErr);
+      }
+
+      summary.push(shopResult);
     }
 
     // 3. Kick off the queue runner to execute any newly recovered sync jobs immediately
@@ -231,4 +242,120 @@ async function reconcileShopStorefront(shopDomain) {
   });
 
   return { success: true, totalFound: orders.length, recovered: enqueuedCount };
+}
+
+/**
+ * Polls connected Notion databases for completed orders and triggers Shopify fulfillment.
+ */
+async function pollNotionFulfillments(shopDomain) {
+  // 1. Fetch active Notion connection for this shop
+  const connection = await prisma.platformConnection.findFirst({
+    where: { shopDomain, provider: "NOTION", isActive: true },
+  });
+  if (!connection) return;
+
+  const { decryptToken } = await import("../crypto.server");
+  const accessToken = await decryptToken(connection.encryptedAccessToken);
+  if (!accessToken) return;
+
+  const { IntegrationFactory } = await import("../adapters/factory");
+  const { fulfillShopifyOrder } = await import("../fulfill.server");
+
+  const adapter = await IntegrationFactory.getAdapter("notion", accessToken);
+
+  // 2. Fetch all active sync targets (databases)
+  const syncTargets = await prisma.syncTarget.findMany({
+    where: { connectionId: connection.id, isActive: true },
+  });
+
+  for (const target of syncTargets) {
+    const targetResourceId = target.targetResourceId;
+    let completedPages = [];
+
+    // Query Notion for completed tasks (Status = Done/Complete/Completed or checkbox = true)
+    try {
+      const queryRes = await adapter.notionFetch(`/databases/${targetResourceId}/query`, {
+        method: "POST",
+        body: JSON.stringify({
+          filter: {
+            or: [
+              { property: "Status", status: { equals: "Done" } },
+              { property: "Status", status: { equals: "Complete" } },
+              { property: "Status", status: { equals: "Completed" } },
+              { property: "Completed", checkbox: { equals: true } },
+              { property: "Complete", checkbox: { equals: true } },
+            ],
+          },
+          page_size: 50,
+        }),
+      });
+      completedPages = queryRes.results || [];
+    } catch (err) {
+      console.warn(`Notion filtered query failed for database ${targetResourceId}, using unfiltered fallback:`, err.message);
+      try {
+        const unfilteredRes = await adapter.notionFetch(`/databases/${targetResourceId}/query`, {
+          method: "POST",
+          body: JSON.stringify({ page_size: 50 }),
+        });
+        completedPages = (unfilteredRes.results || []).filter((page) => {
+          const props = page.properties || {};
+          const statusProp = props.Status;
+          if (statusProp?.type === "status") {
+            const statusName = statusProp.status?.name;
+            if (["Done", "Complete", "Completed"].includes(statusName)) return true;
+          }
+          const completedProp = props.Completed || props.Complete;
+          if (completedProp?.type === "checkbox" && completedProp.checkbox === true) return true;
+          return false;
+        });
+      } catch (fallbackErr) {
+        console.error(`Notion fallback query failed for database ${targetResourceId}:`, fallbackErr);
+      }
+    }
+
+    // Process each completed page
+    for (const page of completedPages) {
+      const record = await prisma.orderSyncRecord.findFirst({
+        where: {
+          shopDomain,
+          targetRecordId: page.id,
+          syncStatus: { not: "fulfilled" },
+        },
+      });
+
+      if (record) {
+        console.log(`[Notion Outbound Sync] Found completed Notion page ${page.id} for Order ID ${record.shopifyOrderId}`);
+        
+        // Trigger fulfillment on Shopify
+        const fulfillRes = await fulfillShopifyOrder(shopDomain, record.shopifyOrderId);
+        if (fulfillRes.ok || fulfillRes.skipped === "no_open_orders") {
+          // Update database record status
+          await prisma.orderSyncRecord.update({
+            where: { id: record.id },
+            data: { syncStatus: "fulfilled" },
+          });
+
+          // Log activity
+          await prisma.activityLog.create({
+            data: {
+              shopDomain,
+              eventType: "order_fulfilled",
+              description: `Shopify Order #${record.orderNumber || record.shopifyOrderId} automatically fulfilled from Notion status change.`,
+              shopifyOrderId: record.shopifyOrderId,
+              syncStatus: "fulfilled",
+            },
+          });
+
+          // Post confirmation comment on the Notion page
+          try {
+            await adapter.postComment(page.id, "✅ Shopify Order automatically fulfilled.");
+          } catch (commentErr) {
+            console.error(`Failed to post fulfillment comment to Notion page ${page.id}:`, commentErr);
+          }
+        } else {
+          console.error(`Failed to fulfill Shopify order ${record.shopifyOrderId} from Notion trigger:`, fulfillRes.error);
+        }
+      }
+    }
+  }
 }

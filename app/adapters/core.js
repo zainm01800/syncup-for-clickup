@@ -692,23 +692,23 @@ export class NotionAdapter extends IntegrationAdapter {
     const pageId = page.id;
 
     if (subtasks && subtasks.length > 0) {
-      const subBlocks = subtasks.map((subName) => ({
-        object: "block",
-        type: "to_do",
-        to_do: {
-          rich_text: [{ text: { content: subName } }],
-          checked: false,
-        },
-      }));
-
-      try {
-        await this.notionFetch(`/blocks/${pageId}/children`, {
-          method: "PATCH",
-          body: JSON.stringify({ children: subBlocks }),
-        });
-        await sleep(800);
-      } catch (err) {
-        console.error("Failed to append subtasks to Notion page:", err);
+      for (const subName of subtasks) {
+        try {
+          await this.notionFetch("/pages", {
+            method: "POST",
+            body: JSON.stringify({
+              parent: { page_id: pageId },
+              properties: {
+                title: [
+                  { text: { content: subName } }
+                ]
+              }
+            })
+          });
+          await sleep(400); // Throttle to stay under Notion's rate limits
+        } catch (err) {
+          console.error(`Failed to create Notion child page for subtask "${subName}":`, err);
+        }
       }
     }
 
@@ -723,20 +723,26 @@ export class NotionAdapter extends IntegrationAdapter {
         },
       ];
       for (const asset of attachments) {
-        assetBlocks.push({
-          object: "block",
-          type: "paragraph",
-          paragraph: {
-            rich_text: [
-              {
-                text: {
-                  content: `🔗 ${asset.filename}`,
-                  link: { url: asset.url },
-                },
-              },
-            ],
-          },
-        });
+        const isImage = /\.(png|jpe?g|gif|webp|bmp)(\?.*)?$/i.test(asset.filename || asset.url);
+        if (isImage) {
+          assetBlocks.push({
+            object: "block",
+            type: "image",
+            image: {
+              type: "external",
+              external: { url: asset.url }
+            }
+          });
+        } else {
+          assetBlocks.push({
+            object: "block",
+            type: "file",
+            file: {
+              type: "external",
+              external: { url: asset.url }
+            }
+          });
+        }
       }
 
       try {

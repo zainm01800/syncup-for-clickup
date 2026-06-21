@@ -43,9 +43,9 @@ export default function App() {
           <h1 className={styles.heading}>SyncUp</h1>
         </div>
         
-        <h2 className={styles.title}>Automate your Shopify workflows directly in ClickUp</h2>
+        <h2 className={styles.title}>Automate your Shopify workflows directly in ClickUp and Notion</h2>
         <p className={styles.text}>
-          Connect your store in seconds. Automatically create tasks for new orders in ClickUp, and mark them complete when fulfilled. (Monday.com and Notion integrations coming soon!)
+          Connect your store in seconds. Automatically create tasks or pages for new orders in ClickUp or Notion, and mark them complete when fulfilled. (Monday.com integration coming soon!)
         </p>
 
         {showForm && (
@@ -63,10 +63,10 @@ export default function App() {
 
         <ul className={styles.list}>
           <li>
-            <strong>Instant ClickUp Tasks</strong>. A detailed task is created automatically in the ClickUp list of your choice as soon as a customer places a new order.
+            <strong>Instant Sync</strong>. A detailed task or page is created automatically in ClickUp or Notion as soon as a customer places a new order.
           </li>
           <li>
-            <strong>Fulfillment Sync</strong>. When you fulfill an order in Shopify, the matching ClickUp task is automatically marked complete.
+            <strong>Two-Way Fulfillment Sync</strong>. Fulfilling an order in Shopify completes the task in your workspace. Alternatively, marking a task complete in ClickUp or Notion automatically triggers Shopify fulfillment.
           </li>
           <li>
             <strong>Real-time Logs</strong>. Monitor sync status, connection health, and view an activity log directly inside your Shopify admin dashboard.

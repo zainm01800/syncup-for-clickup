@@ -2234,8 +2234,8 @@ export default function Index() {
                                 Connect Notion to start syncing new orders into a database of your choice. New orders become database pages, and fulfilled orders get marked complete — automatically.
                               </p>
                               
-                              <div style={{ ...styles.errorBanner, background: "rgba(150,150,150,0.08)", color: "#cfcfcc", marginTop: 12, marginBottom: 20 }}>
-                                Note: Notion sync is one-way. Orders are sent to Notion, but completing a Notion page will not auto-fulfill the Shopify order.
+                              <div style={{ ...styles.errorBanner, background: "rgba(0,196,140,0.08)", color: "#99ffd6", marginTop: 12, marginBottom: 20 }}>
+                                Now supporting Two-Way Sync! Mark a database page complete in Notion to automatically fulfill the order in Shopify.
                               </div>
 
                               <a
@@ -3329,26 +3329,21 @@ export default function Index() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderRadius: 10, border: "1px solid #2a2a2a", background: "#151515" }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: "#ffffff", display: "flex", alignItems: "center", gap: 6 }}>
-                                Mark task complete when order ships <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp or Monday." />
-                                {selectedPlatform !== "notion" && !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
+                                Mark task complete when order ships <InfoTooltip text="Automatically fulfill the Shopify order when the mapped task is marked complete or done in ClickUp, Monday, or Notion." />
+                                {!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") && (
                                   <span style={{ fontSize: 9, background: "rgba(255,153,0,0.12)", color: "#ff9900", border: "1px solid rgba(255,153,0,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>Growth+</span>
-                                )}
-                                {selectedPlatform === "notion" && (
-                                  <span style={{ fontSize: 9, background: "rgba(150,150,150,0.12)", color: "#9a9a9a", border: "1px solid rgba(150,150,150,0.3)", borderRadius: 6, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>One-way</span>
                                 )}
                               </div>
                               <div style={{ fontSize: 12, color: "#9a9a9a", marginTop: 3 }}>
-                                {selectedPlatform === "notion"
-                                  ? "Notion sync is one-way: orders are sent to Notion, but marking a Notion page complete will NOT auto-fulfill the Shopify order (Notion has no change webhooks)."
-                                  : "Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday."}
+                                Automatically fulfill and close the Shopify order when its task is marked complete in ClickUp/Monday, or when the database page status is completed in Notion.
                               </div>
                             </div>
-                            <input type="hidden" name="twoWaySyncEnabled" value={String(selectedPlatform === "notion" ? false : localTwoWaySync)} />
+                            <input type="hidden" name="twoWaySyncEnabled" value={String(localTwoWaySync)} />
                             <button
                               type="button"
                               role="switch"
                               aria-checked={localTwoWaySync}
-                              disabled={selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
+                              disabled={!(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")}
                               onClick={() => {
                                 if (!localTwoWaySync) {
                                   setShowConfirmModal(true);
@@ -3362,12 +3357,12 @@ export default function Index() {
                                 borderRadius: 12,
                                 background: localTwoWaySync ? "#00c48c" : "#2a2a2a",
                                 border: "none",
-                                cursor: (selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")) ? "not-allowed" : "pointer",
+                                cursor: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? "not-allowed" : "pointer",
                                 position: "relative",
                                 flexShrink: 0,
                                 transition: "background 0.2s ease",
                                 outline: "none",
-                                opacity: (selectedPlatform === "notion" || !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial")) ? 0.5 : 1
+                                opacity: !(subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial") ? 0.5 : 1
                               }}
                             >
                               <span style={{
