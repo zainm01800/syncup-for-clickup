@@ -1512,7 +1512,7 @@ export default function Index() {
               <h1 style={styles.title}>SyncUp</h1>
               <p style={styles.subtitle}>
                 {wizardStep === "dashboard"
-                  ? "Automatically sync your Shopify orders to ClickUp, Monday, or Notion."
+                  ? "Automatically sync your Shopify orders to ClickUp or Notion."
                   : "Automatically sync your Shopify orders. Setup takes about 2 minutes."}
               </p>
             </div>
