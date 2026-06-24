@@ -27,6 +27,20 @@ function cacheSet(map, key, value) {
   map.set(key, value);
 }
 
+// Calculate date offset using business days (skipping Saturday and Sunday)
+function addBusinessDays(startDateMs, daysOffset) {
+  let currentDate = new Date(startDateMs);
+  let addedDays = 0;
+  while (addedDays < daysOffset) {
+    currentDate.setDate(currentDate.getDate() + 1);
+    const dayOfWeek = currentDate.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      addedDays++;
+    }
+  }
+  return currentDate.getTime();
+}
+
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -344,6 +358,7 @@ export const loader = async ({ request }) => {
     subtasksEnabled: subscription.subtasksEnabled || false,
     twoWaySyncEnabled: subscription.twoWaySyncEnabled || false,
     dueDateOffsetDays: subscription.dueDateOffsetDays,
+    dueDateWorkingDays: subscription.dueDateWorkingDays,
     subscription: {
       planName: subscription.planName,
       status: subscription.status,
@@ -661,7 +676,11 @@ export const action = async ({ request }) => {
       let dueDate = undefined;
       if (subscription.dueDateOffsetDays !== null) {
         const offsetDays = subscription.dueDateOffsetDays !== undefined ? subscription.dueDateOffsetDays : 2;
-        dueDate = orderCreatedAt + offsetDays * 24 * 60 * 60 * 1000;
+        if (subscription.dueDateWorkingDays) {
+          dueDate = addBusinessDays(orderCreatedAt, offsetDays);
+        } else {
+          dueDate = orderCreatedAt + offsetDays * 24 * 60 * 60 * 1000;
+        }
       }
 
       await adapter.createRecord(connection.listId, {
@@ -722,6 +741,8 @@ export const action = async ({ request }) => {
         dueDateOffsetDays = parseInt(dropdownVal, 10);
       }
 
+      const dueDateWorkingDays = formData.get("dueDateWorkingDays") === "true";
+
       const validTriggers = ["payment_confirmed", "on_create", "on_fulfillment_start"];
       if (!validTriggers.includes(syncTrigger)) {
         return { ok: false, error: "Invalid sync trigger value." };
@@ -742,6 +763,7 @@ export const action = async ({ request }) => {
           subtasksEnabled: isGrowthOrPro ? subtasksEnabled : false,
           twoWaySyncEnabled: isGrowthOrPro ? twoWaySyncEnabled : false,
           dueDateOffsetDays,
+          dueDateWorkingDays,
         },
       });
 
@@ -1000,6 +1022,7 @@ export default function Index() {
     subtasksEnabled,
     twoWaySyncEnabled,
     dueDateOffsetDays,
+    dueDateWorkingDays,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -1134,6 +1157,7 @@ export default function Index() {
   const [localDueDateOffsetDays, setLocalDueDateOffsetDays] = useState(
     dueDateOffsetDays !== null && dueDateOffsetDays !== undefined ? String(dueDateOffsetDays) : ""
   );
+  const [localDueDateWorkingDays, setLocalDueDateWorkingDays] = useState(dueDateWorkingDays || false);
 
   const compiledTemplatePreview = useMemo(() => {
     const template = localTaskTemplate.trim() || "Order {order_number} — {customer_name}";
@@ -3364,6 +3388,23 @@ export default function Index() {
                                   placeholder="Enter custom number of days"
                                   style={styles.input}
                                 />
+                              </div>
+                            )}
+
+                            {dueDateDropdownVal !== "none" && (
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                                <input
+                                  id="dueDateWorkingDays"
+                                  name="dueDateWorkingDays"
+                                  type="checkbox"
+                                  checked={localDueDateWorkingDays}
+                                  onChange={(e) => setLocalDueDateWorkingDays(e.currentTarget.checked)}
+                                  value="true"
+                                  style={{ accentColor: C.accent }}
+                                />
+                                <label style={{ fontSize: 13, color: C.text }} htmlFor="dueDateWorkingDays">
+                                  Exclude weekends (use business/working days only)
+                                </label>
                               </div>
                             )}
                           </div>

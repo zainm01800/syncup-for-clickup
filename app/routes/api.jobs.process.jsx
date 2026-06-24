@@ -8,6 +8,20 @@ export const action = async ({ request }) => {
   return handleJobProcess(request);
 };
 
+// Calculate date offset using business days (skipping Saturday and Sunday)
+function addBusinessDays(startDateMs, daysOffset) {
+  let currentDate = new Date(startDateMs);
+  let addedDays = 0;
+  while (addedDays < daysOffset) {
+    currentDate.setDate(currentDate.getDate() + 1);
+    const dayOfWeek = currentDate.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      addedDays++;
+    }
+  }
+  return currentDate.getTime();
+}
+
 // Boundary-aware, case-insensitive match for a single keyword token against a
 // field value. "cat" matches "cat toy", "cat-toy", "red cat", "TSHIRT-CAT-001"
 // but NOT "category", "education", or "scat" — boundaries are start/end of string
@@ -321,7 +335,11 @@ async function syncToPlatformConnection({
   let dueDate = undefined;
   if (subscription.dueDateOffsetDays !== null) {
     const offsetDays = subscription.dueDateOffsetDays !== undefined ? subscription.dueDateOffsetDays : 2;
-    dueDate = orderCreatedAt + offsetDays * 24 * 60 * 60 * 1000;
+    if (subscription.dueDateWorkingDays) {
+      dueDate = addBusinessDays(orderCreatedAt, offsetDays);
+    } else {
+      dueDate = orderCreatedAt + offsetDays * 24 * 60 * 60 * 1000;
+    }
   }
 
   // Compile subtask names (only if enabled by plan + subscription setting)

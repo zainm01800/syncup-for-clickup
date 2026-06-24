@@ -64,6 +64,7 @@ model Subscription {
   // grace-period / expiry date math. See getOrCreateSubscription in billing.server.js.
   lastCounterReset       DateTime? @map("last_counter_reset")
   dueDateOffsetDays      Int?      @default(2) @map("due_date_offset_days")
+  dueDateWorkingDays     Boolean   @default(false) @map("due_date_working_days")
 
   @@map("subscriptions")
 }
