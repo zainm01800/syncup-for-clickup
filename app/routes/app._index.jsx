@@ -705,14 +705,21 @@ export const action = async ({ request }) => {
       const syncTrigger = formData.get("syncTrigger") || "payment_confirmed";
       const subtasksEnabled = formData.get("subtasksEnabled") === "true";
       const twoWaySyncEnabled = formData.get("twoWaySyncEnabled") === "true";
-      const rawOffset = formData.get("dueDateOffsetDays");
+      const dropdownVal = formData.get("dueDateDropdownVal");
+      const customVal = formData.get("dueDateOffsetDaysCustom");
       let dueDateOffsetDays = null;
-      if (rawOffset !== null && rawOffset.trim() !== "") {
-        const parsed = Number(rawOffset);
-        if (!Number.isInteger(parsed) || parsed < 0) {
-          return { ok: false, error: "The automatic due date offset must be a valid whole number (0 or greater) or left blank." };
+      if (dropdownVal === "custom") {
+        if (customVal !== null && customVal.trim() !== "") {
+          const parsed = Number(customVal);
+          if (!Number.isInteger(parsed) || parsed < 0) {
+            return { ok: false, error: "The custom due date offset must be a valid whole number (0 or greater)." };
+          }
+          dueDateOffsetDays = parsed;
+        } else {
+          return { ok: false, error: "Please enter a custom number of days." };
         }
-        dueDateOffsetDays = parsed;
+      } else if (dropdownVal !== "none") {
+        dueDateOffsetDays = parseInt(dropdownVal, 10);
       }
 
       const validTriggers = ["payment_confirmed", "on_create", "on_fulfillment_start"];
@@ -1116,6 +1123,14 @@ export default function Index() {
   const [localSyncTrigger, setLocalSyncTrigger] = useState(syncTrigger || "payment_confirmed");
   const [localSubtasks, setLocalSubtasks] = useState(subtasksEnabled || false);
   const [localTwoWaySync, setLocalTwoWaySync] = useState(twoWaySyncEnabled || false);
+  const presets = ["0", "1", "2", "3", "5", "7", "14"];
+  const initialDropdownVal = dueDateOffsetDays === null || dueDateOffsetDays === undefined
+    ? "none"
+    : presets.includes(String(dueDateOffsetDays))
+      ? String(dueDateOffsetDays)
+      : "custom";
+
+  const [dueDateDropdownVal, setDueDateDropdownVal] = useState(initialDropdownVal);
   const [localDueDateOffsetDays, setLocalDueDateOffsetDays] = useState(
     dueDateOffsetDays !== null && dueDateOffsetDays !== undefined ? String(dueDateOffsetDays) : ""
   );
@@ -3299,25 +3314,58 @@ export default function Index() {
                             </div>
                           </div>
 
-                          {/* Automatic Task Due Date Offset Input */}
+                          {/* Automatic Task Due Date Offset Selector */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                            <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="dueDateOffsetDays">
-                              Automatic Task Due Date Offset (Days) <InfoTooltip text="Enter the number of days after order creation to set the task due date in your project tool. Leave blank to set no due date." />
+                            <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="dueDateDropdownVal">
+                              Automatic Task Due Date <InfoTooltip text="Choose how many days after order creation to set the task due date in your project tool. Set to 'No automatic due date' to leave the task due date blank." />
                             </label>
                             <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
-                              Enter a whole number of days (e.g., 0 for same day, 2 for default). Leave blank to disable the due date.
+                              Select how many days after an order is placed to set the task due date.
                             </p>
-                            <input
-                              id="dueDateOffsetDays"
-                              name="dueDateOffsetDays"
-                              type="number"
-                              min="0"
-                              step="1"
-                              value={localDueDateOffsetDays}
-                              onChange={(e) => setLocalDueDateOffsetDays(e.currentTarget.value)}
-                              placeholder="Leave blank for no due date"
-                              style={styles.input}
-                            />
+                            <select
+                              id="dueDateDropdownVal"
+                              name="dueDateDropdownVal"
+                              value={dueDateDropdownVal}
+                              onChange={(e) => {
+                                const val = e.currentTarget.value;
+                                setDueDateDropdownVal(val);
+                                if (val !== "custom" && val !== "none") {
+                                  setLocalDueDateOffsetDays(val);
+                                } else if (val === "none") {
+                                  setLocalDueDateOffsetDays("");
+                                }
+                              }}
+                              style={styles.select}
+                            >
+                              <option value="none">No automatic due date</option>
+                              <option value="0">Due same day</option>
+                              <option value="1">Due in 1 day</option>
+                              <option value="2">Due in 2 days (Default)</option>
+                              <option value="3">Due in 3 days</option>
+                              <option value="5">Due in 5 days</option>
+                              <option value="7">Due in 7 days</option>
+                              <option value="14">Due in 14 days</option>
+                              <option value="custom">Custom...</option>
+                            </select>
+
+                            {dueDateDropdownVal === "custom" && (
+                              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: C.muted }} htmlFor="dueDateOffsetDaysCustom">
+                                  Custom Offset (Days)
+                                </label>
+                                <input
+                                  id="dueDateOffsetDaysCustom"
+                                  name="dueDateOffsetDaysCustom"
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  value={localDueDateOffsetDays}
+                                  onChange={(e) => setLocalDueDateOffsetDays(e.currentTarget.value)}
+                                  placeholder="Enter custom number of days"
+                                  style={styles.input}
+                                />
+                              </div>
+                            )}
                           </div>
 
                           {/* Subtasks Toggle */}
