@@ -318,7 +318,11 @@ async function syncToPlatformConnection({
   }
 
   const orderCreatedAt = order.created_at ? new Date(order.created_at).getTime() : Date.now();
-  const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+  let dueDate = undefined;
+  if (subscription.dueDateOffsetDays !== null) {
+    const offsetDays = subscription.dueDateOffsetDays !== undefined ? subscription.dueDateOffsetDays : 2;
+    dueDate = orderCreatedAt + offsetDays * 24 * 60 * 60 * 1000;
+  }
 
   // Compile subtask names (only if enabled by plan + subscription setting)
   const subtasksEnabled = isGrowthOrPro && subscription.subtasksEnabled;
@@ -362,7 +366,7 @@ async function syncToPlatformConnection({
     description,
     priority: 3,
     startDate: orderCreatedAt,
-    dueDate: orderCreatedAt + twoDaysMs,
+    dueDate,
     tags: ["shopify-order"],
     rawOrder: order,
     customerName,

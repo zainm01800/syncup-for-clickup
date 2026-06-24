@@ -343,6 +343,7 @@ export const loader = async ({ request }) => {
     syncTrigger: subscription.syncTrigger || "payment_confirmed",
     subtasksEnabled: subscription.subtasksEnabled || false,
     twoWaySyncEnabled: subscription.twoWaySyncEnabled || false,
+    dueDateOffsetDays: subscription.dueDateOffsetDays,
     subscription: {
       planName: subscription.planName,
       status: subscription.status,
@@ -623,6 +624,8 @@ export const action = async ({ request }) => {
         return { ok: false, error: "Please configure and save a target connection first." };
       }
 
+      const subscription = await getOrCreateSubscription(shop);
+
       const { IntegrationFactory } = await import("../adapters/factory");
       const adapter = await IntegrationFactory.getAdapter(connection.selectedPlatform, connection.accessToken);
 
@@ -655,14 +658,18 @@ export const action = async ({ request }) => {
  🔗 View order: https://admin.shopify.com/store/${shop.replace(/\.myshopify\.com$/, "")}/orders/test`;
 
       const orderCreatedAt = Date.now();
-      const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+      let dueDate = undefined;
+      if (subscription.dueDateOffsetDays !== null) {
+        const offsetDays = subscription.dueDateOffsetDays !== undefined ? subscription.dueDateOffsetDays : 2;
+        dueDate = orderCreatedAt + offsetDays * 24 * 60 * 60 * 1000;
+      }
 
       await adapter.createRecord(connection.listId, {
         name: mockTaskName,
         description: mockDescription,
         priority: 3,
         startDate: orderCreatedAt,
-        dueDate: orderCreatedAt + twoDaysMs,
+        dueDate,
         tags: ["shopify-order", "test-sync"],
         rawOrder: {
           id: "9999-TEST",
@@ -698,6 +705,8 @@ export const action = async ({ request }) => {
       const syncTrigger = formData.get("syncTrigger") || "payment_confirmed";
       const subtasksEnabled = formData.get("subtasksEnabled") === "true";
       const twoWaySyncEnabled = formData.get("twoWaySyncEnabled") === "true";
+      const rawOffset = formData.get("dueDateOffsetDays");
+      const dueDateOffsetDays = rawOffset === "none" ? null : parseInt(rawOffset, 10);
 
       const validTriggers = ["payment_confirmed", "on_create", "on_fulfillment_start"];
       if (!validTriggers.includes(syncTrigger)) {
@@ -718,6 +727,7 @@ export const action = async ({ request }) => {
           syncTrigger,
           subtasksEnabled: isGrowthOrPro ? subtasksEnabled : false,
           twoWaySyncEnabled: isGrowthOrPro ? twoWaySyncEnabled : false,
+          dueDateOffsetDays,
         },
       });
 
@@ -975,6 +985,7 @@ export default function Index() {
     syncTrigger,
     subtasksEnabled,
     twoWaySyncEnabled,
+    dueDateOffsetDays,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -1098,6 +1109,9 @@ export default function Index() {
   const [localSyncTrigger, setLocalSyncTrigger] = useState(syncTrigger || "payment_confirmed");
   const [localSubtasks, setLocalSubtasks] = useState(subtasksEnabled || false);
   const [localTwoWaySync, setLocalTwoWaySync] = useState(twoWaySyncEnabled || false);
+  const [localDueDateOffsetDays, setLocalDueDateOffsetDays] = useState(
+    dueDateOffsetDays !== null && dueDateOffsetDays !== undefined ? String(dueDateOffsetDays) : "none"
+  );
 
   const compiledTemplatePreview = useMemo(() => {
     const template = localTaskTemplate.trim() || "Order {order_number} — {customer_name}";
@@ -3276,6 +3290,32 @@ export default function Index() {
                                 </label>
                               ))}
                             </div>
+                          </div>
+
+                          {/* Automatic Task Due Date Offset Selector */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="dueDateOffsetDays">
+                              Automatic Task Due Date <InfoTooltip text="Choose how many days after order creation to set the task due date in your project tool. Set to 'No automatic due date' to leave the task due date blank." />
+                            </label>
+                            <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
+                              Select how many days after an order is placed to set the task due date.
+                            </p>
+                            <select
+                              id="dueDateOffsetDays"
+                              name="dueDateOffsetDays"
+                              value={localDueDateOffsetDays}
+                              onChange={(e) => setLocalDueDateOffsetDays(e.currentTarget.value)}
+                              style={styles.select}
+                            >
+                              <option value="none">No automatic due date</option>
+                              <option value="0">Due same day</option>
+                              <option value="1">Due in 1 day</option>
+                              <option value="2">Due in 2 days (Default)</option>
+                              <option value="3">Due in 3 days</option>
+                              <option value="5">Due in 5 days</option>
+                              <option value="7">Due in 7 days</option>
+                              <option value="14">Due in 14 days</option>
+                            </select>
                           </div>
 
                           {/* Subtasks Toggle */}
