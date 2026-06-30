@@ -65,6 +65,7 @@ model Subscription {
   lastCounterReset       DateTime? @map("last_counter_reset")
   dueDateOffsetDays      Int?      @default(2) @map("due_date_offset_days")
   dueDateWorkingDays     Boolean   @default(false) @map("due_date_working_days")
+  startDateEnabled       Boolean   @default(true)  @map("start_date_enabled")
 
   @@map("subscriptions")
 }

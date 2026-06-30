@@ -359,6 +359,7 @@ export const loader = async ({ request }) => {
     twoWaySyncEnabled: subscription.twoWaySyncEnabled || false,
     dueDateOffsetDays: subscription.dueDateOffsetDays,
     dueDateWorkingDays: subscription.dueDateWorkingDays,
+    startDateEnabled: subscription.startDateEnabled,
     subscription: {
       planName: subscription.planName,
       status: subscription.status,
@@ -687,7 +688,7 @@ export const action = async ({ request }) => {
         name: mockTaskName,
         description: mockDescription,
         priority: 3,
-        startDate: orderCreatedAt,
+        startDate: subscription.startDateEnabled !== false ? orderCreatedAt : undefined,
         dueDate,
         tags: ["shopify-order", "test-sync"],
         rawOrder: {
@@ -742,6 +743,7 @@ export const action = async ({ request }) => {
       }
 
       const dueDateWorkingDays = formData.get("dueDateWorkingDays") === "true";
+      const startDateEnabled = formData.get("startDateEnabled") === "true";
 
       const validTriggers = ["payment_confirmed", "on_create", "on_fulfillment_start"];
       if (!validTriggers.includes(syncTrigger)) {
@@ -764,6 +766,7 @@ export const action = async ({ request }) => {
           twoWaySyncEnabled: isGrowthOrPro ? twoWaySyncEnabled : false,
           dueDateOffsetDays,
           dueDateWorkingDays,
+          startDateEnabled,
         },
       });
 
@@ -1023,6 +1026,7 @@ export default function Index() {
     twoWaySyncEnabled,
     dueDateOffsetDays,
     dueDateWorkingDays,
+    startDateEnabled,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -1158,6 +1162,7 @@ export default function Index() {
     dueDateOffsetDays !== null && dueDateOffsetDays !== undefined ? String(dueDateOffsetDays) : ""
   );
   const [localDueDateWorkingDays, setLocalDueDateWorkingDays] = useState(dueDateWorkingDays || false);
+  const [localStartDateEnabled, setLocalStartDateEnabled] = useState(startDateEnabled !== false);
 
   const compiledTemplatePreview = useMemo(() => {
     const template = localTaskTemplate.trim() || "Order {order_number} — {customer_name}";
@@ -3335,6 +3340,30 @@ export default function Index() {
                                   </div>
                                 </label>
                               ))}
+                            </div>
+                          </div>
+
+                          {/* Automatic Task Start Date Selector */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <label style={{ ...styles.formLabel, marginBottom: 0 }} htmlFor="startDateEnabled">
+                              Automatic Task Start Date <InfoTooltip text="When enabled, the task's start date is automatically set to the Shopify order creation date. If disabled, the start date is left blank." />
+                            </label>
+                            <p style={{ ...styles.cardText, margin: 0, fontSize: 12 }}>
+                              Decide if tasks should start on the order creation date.
+                            </p>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                              <input
+                                id="startDateEnabled"
+                                name="startDateEnabled"
+                                type="checkbox"
+                                checked={localStartDateEnabled}
+                                onChange={(e) => setLocalStartDateEnabled(e.currentTarget.checked)}
+                                value="true"
+                                style={{ accentColor: C.accent }}
+                              />
+                              <label style={{ fontSize: 13, color: C.text }} htmlFor="startDateEnabled">
+                                Set Shopify order date as task start date
+                              </label>
                             </div>
                           </div>
 

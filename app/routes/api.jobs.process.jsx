@@ -383,7 +383,7 @@ async function syncToPlatformConnection({
     name: taskName,
     description,
     priority: 3,
-    startDate: orderCreatedAt,
+    startDate: subscription.startDateEnabled !== false ? orderCreatedAt : undefined,
     dueDate,
     tags: ["shopify-order"],
     rawOrder: order,
