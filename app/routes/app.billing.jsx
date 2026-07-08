@@ -515,68 +515,7 @@ export default function BillingPage() {
           </p>
         </header>
 
-        {/* Grandfathering / Urgency Banner */}
-        {isPromoActive ? (
-          <div style={{
-            background: "rgba(0, 196, 140, 0.05)",
-            border: `1px solid rgba(0, 196, 140, 0.2)`,
-            color: C.accent,
-            padding: 16,
-            borderRadius: 12,
-            fontSize: 13,
-            display: "flex",
-            alignItems: "start",
-            gap: 12,
-            marginBottom: 40,
-            maxWidth: 896,
-            marginLeft: "auto",
-            marginRight: "auto",
-            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1)",
-            backdropFilter: "blur(8px)",
-            boxSizing: "border-box"
-          }}>
-            <span style={{ fontSize: 20, lineHeight: 1 }}>🚀</span>
-            <div>
-              <strong style={{
-                fontWeight: 600,
-                display: "block",
-                marginBottom: 2,
-                color: C.text,
-              }}>LAUNCH SPECIAL OFFER</strong>
-              Install today to lock in these discounted B2B rates forever. <strong style={{ color: C.text }}>Only {spotsRemaining} slots remaining!</strong> Once our beta ends, pricing will increase for new installs. Existing merchants will remain grandfathered on these plans indefinitely!
-            </div>
-          </div>
-        ) : (
-          <div style={{
-            background: "rgba(255, 255, 255, 0.03)",
-            border: `1px solid ${C.border}`,
-            color: C.muted,
-            padding: 16,
-            borderRadius: 12,
-            fontSize: 13,
-            display: "flex",
-            alignItems: "start",
-            gap: 12,
-            marginBottom: 40,
-            maxWidth: 896,
-            marginLeft: "auto",
-            marginRight: "auto",
-            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.05)",
-            backdropFilter: "blur(8px)",
-            boxSizing: "border-box"
-          }}>
-            <span style={{ fontSize: 20, lineHeight: 1 }}>💡</span>
-            <div>
-              <strong style={{
-                fontWeight: 600,
-                display: "block",
-                marginBottom: 2,
-                color: C.text,
-              }}>PROMOTIONAL SLOTS CLAIMED</strong>
-              All 10 beta launch promotional slots have been claimed! Standard rates are now active for new installs. Existing promotional subscribers remain grandfathered at their initial rates.
-            </div>
-          </div>
-        )}
+
 
         {/* Action Notifications */}
         {scheduled && scheduledPlan && (
