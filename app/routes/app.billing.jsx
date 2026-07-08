@@ -358,8 +358,6 @@ export default function BillingPage() {
       annualPriceDesc: "$8.25/mo",
       billedDesc: "Billed annually as $99",
       monthlyEquivalent: "8.25",
-      regMonthly: "$14.99",
-      regAnnual: "$149",
     },
     standard: {
       key: "standard",
@@ -368,8 +366,6 @@ export default function BillingPage() {
       annualPriceDesc: "$17.92/mo",
       billedDesc: "Billed annually as $215",
       monthlyEquivalent: "17.92",
-      regMonthly: "$29.99",
-      regAnnual: "$323",
     },
     growth: {
       key: "growth",
@@ -378,8 +374,6 @@ export default function BillingPage() {
       annualPriceDesc: "$35.92/mo",
       billedDesc: "Billed annually as $431",
       monthlyEquivalent: "35.92",
-      regMonthly: "$49.99",
-      regAnnual: "$539",
     },
     pro: {
       key: "pro",
@@ -388,8 +382,6 @@ export default function BillingPage() {
       annualPriceDesc: "$71.92/mo",
       billedDesc: "Billed annually as $863",
       monthlyEquivalent: "71.92",
-      regMonthly: "$99.99",
-      regAnnual: "$1079",
     },
   };
 
@@ -459,12 +451,12 @@ export default function BillingPage() {
     }
   };
 
-  const isPromoActive = activePaidCount < 10;
+  const isPromoActive = false;
   // A merchant who subscribed during the launch promo is grandfathered: they keep
   // seeing promo prices even after the global 10-slot pool fills, so the price on
   // this page always matches what Shopify is actually charging them.
-  const userSeesPromo = isPromoActive || subscription?.isPromoLocked === true;
-  const spotsRemaining = Math.max(0, 10 - activePaidCount);
+  const userSeesPromo = true;
+  const spotsRemaining = 0;
 
   return (
     <div style={{

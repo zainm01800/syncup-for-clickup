@@ -22,17 +22,7 @@ async function logActivity(shop, eventType, description) {
 // NOT control what an already-grandfathered merchant sees — that is governed by
 // their own isPromoLocked flag (see activateSubscription / userSeesPromo).
 export async function isPromoActiveGlobally() {
-  const activePaidCount = await prisma.subscription.count({
-    where: {
-      planName: {
-        notIn: ["trial", "free", "expired", "cancelled"],
-      },
-      shopDomain: {
-        not: "syncup-test-store.myshopify.com",
-      },
-    },
-  });
-  return activePaidCount < 10;
+  return false;
 }
 
 export async function getOrCreateSubscription(shop) {
@@ -373,23 +363,7 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
     where: { shopDomain: shop }
   });
 
-  const activePaidCount = await prisma.subscription.count({
-    where: {
-      planName: {
-        notIn: ["trial", "free", "expired", "cancelled"],
-      },
-      shopDomain: {
-        not: "syncup-test-store.myshopify.com",
-      },
-    },
-  });
-  const isPromoActive = activePaidCount < 10;
-  const userSeesPromo = isPromoActive || currentSub?.isPromoLocked === true;
-  
-  let chargedPrice = plan.price;
-  if (!userSeesPromo && planKey !== "free") {
-    chargedPrice = plan.regularPrice || plan.price;
-  }
+  const chargedPrice = plan.price;
 
   // Calculate remaining trial days if they are upgrading from the free trial
   let trialDays = 0;

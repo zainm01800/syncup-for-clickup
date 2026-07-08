@@ -53,18 +53,7 @@ export const loader = async ({ request }) => {
     getRecentActivity(shop, 5),
   ]);
 
-  const activePaidCount = await prisma.subscription.count({
-    where: {
-      planName: {
-        notIn: ["trial", "free", "expired", "cancelled"],
-      },
-      shopDomain: {
-        not: "syncup-test-store.myshopify.com",
-      },
-    },
-  });
-  const isPromoActive = activePaidCount < 10;
-  const userSeesPromo = isPromoActive || subscription?.isPromoLocked === true;
+  const userSeesPromo = true;
 
   let lists = [];
   let listError = null;
