@@ -248,6 +248,15 @@ async function reconcileShopStorefront(shopDomain) {
  * Polls connected Notion databases for completed orders and triggers Shopify fulfillment.
  */
 async function pollNotionFulfillments(shopDomain) {
+  // Check subscription plan & two-way sync toggle
+  const sub = await prisma.subscription.findUnique({
+    where: { shopDomain }
+  });
+  const isGrowthOrPro = sub && (sub.planName.startsWith("growth") || sub.planName.startsWith("pro") || sub.planName === "trial");
+  if (!sub || !isGrowthOrPro || !sub.twoWaySyncEnabled) {
+    return;
+  }
+
   // 1. Fetch active Notion connection for this shop
   const connection = await prisma.platformConnection.findFirst({
     where: { shopDomain, provider: "NOTION", isActive: true },
