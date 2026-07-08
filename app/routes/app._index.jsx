@@ -53,6 +53,19 @@ export const loader = async ({ request }) => {
     getRecentActivity(shop, 5),
   ]);
 
+  const activePaidCount = await prisma.subscription.count({
+    where: {
+      planName: {
+        notIn: ["trial", "free", "expired", "cancelled"],
+      },
+      shopDomain: {
+        not: "syncup-test-store.myshopify.com",
+      },
+    },
+  });
+  const isPromoActive = activePaidCount < 10;
+  const userSeesPromo = isPromoActive || subscription?.isPromoLocked === true;
+
   let lists = [];
   let listError = null;
   let clickupFields = [];
@@ -343,6 +356,7 @@ export const loader = async ({ request }) => {
     clickupConnectState: await signState(shop),
     connected: Boolean(connection?.accessToken),
     healthStatus,
+    userSeesPromo,
     selectedPlatform: connection?.selectedPlatform || "clickup",
     workspaceName: connection?.workspaceName || null,
     listConnections: connection?.listConnections || [],
@@ -1027,6 +1041,7 @@ export default function Index() {
     dueDateOffsetDays,
     dueDateWorkingDays,
     startDateEnabled,
+    userSeesPromo,
     subscription,
     trialBanner,
     isTrialOrSubscriptionActive,
@@ -1697,16 +1712,20 @@ export default function Index() {
                   const monthlyPlan = PLANS[`${key}_monthly`];
                   const annualPlan = PLANS[`${key}_annual`];
 
-                  const displayPrice = billingInterval === "annual"
-                    ? `$${(annualPlan.price / 12).toFixed(2)}/mo`
-                    : `$${monthlyPlan.price.toFixed(2)}/mo`;
+                  const actualPrice = userSeesPromo
+                    ? (billingInterval === "annual" ? (annualPlan.price / 12) : monthlyPlan.price)
+                    : (billingInterval === "annual" ? (annualPlan.regularPrice / 12) : (monthlyPlan.regularPrice || monthlyPlan.price));
 
-                  const regularPrice = billingInterval === "annual"
-                    ? (annualPlan.regularPrice ? `$${annualPlan.regularPrice.toFixed(2)}` : null)
-                    : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}` : null);
+                  const displayPrice = `$${actualPrice.toFixed(2)}/mo`;
+
+                  const regularPrice = userSeesPromo
+                    ? (billingInterval === "annual"
+                      ? (annualPlan.regularPrice ? `$${(annualPlan.regularPrice / 12).toFixed(2)}/mo` : null)
+                      : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}/mo` : null))
+                    : null;
 
                   const billedDesc = billingInterval === "annual"
-                    ? `Billed annually as $${annualPlan.price}`
+                    ? `Billed annually as $${userSeesPromo ? annualPlan.price : (annualPlan.regularPrice || annualPlan.price)}`
                     : null;
 
                   return (
@@ -1982,16 +2001,20 @@ export default function Index() {
                                   const monthlyPlan = PLANS[`${key}_monthly`];
                                   const annualPlan = PLANS[`${key}_annual`];
 
-                                  const displayPrice = billingInterval === "annual"
-                                    ? `$${(annualPlan.price / 12).toFixed(2)}/mo`
-                                    : `$${monthlyPlan.price.toFixed(2)}/mo`;
+                                  const actualPrice = userSeesPromo
+                                    ? (billingInterval === "annual" ? (annualPlan.price / 12) : monthlyPlan.price)
+                                    : (billingInterval === "annual" ? (annualPlan.regularPrice / 12) : (monthlyPlan.regularPrice || monthlyPlan.price));
 
-                                  const regularPrice = billingInterval === "annual"
-                                    ? (annualPlan.regularPrice ? `$${annualPlan.regularPrice.toFixed(2)}` : null)
-                                    : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}` : null);
+                                  const displayPrice = `$${actualPrice.toFixed(2)}/mo`;
+
+                                  const regularPrice = userSeesPromo
+                                    ? (billingInterval === "annual"
+                                      ? (annualPlan.regularPrice ? `$${(annualPlan.regularPrice / 12).toFixed(2)}/mo` : null)
+                                      : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}/mo` : null))
+                                    : null;
 
                                   const billedDesc = billingInterval === "annual"
-                                    ? `Billed annually as $${annualPlan.price}`
+                                    ? `Billed annually as $${userSeesPromo ? annualPlan.price : (annualPlan.regularPrice || annualPlan.price)}`
                                     : null;
 
                                   return (
@@ -2198,16 +2221,20 @@ export default function Index() {
                                   const monthlyPlan = PLANS[`${key}_monthly`];
                                   const annualPlan = PLANS[`${key}_annual`];
 
-                                  const displayPrice = billingInterval === "annual"
-                                    ? `$${(annualPlan.price / 12).toFixed(2)}/mo`
-                                    : `$${monthlyPlan.price.toFixed(2)}/mo`;
+                                  const actualPrice = userSeesPromo
+                                    ? (billingInterval === "annual" ? (annualPlan.price / 12) : monthlyPlan.price)
+                                    : (billingInterval === "annual" ? (annualPlan.regularPrice / 12) : (monthlyPlan.regularPrice || monthlyPlan.price));
 
-                                  const regularPrice = billingInterval === "annual"
-                                    ? (annualPlan.regularPrice ? `$${annualPlan.regularPrice.toFixed(2)}` : null)
-                                    : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}` : null);
+                                  const displayPrice = `$${actualPrice.toFixed(2)}/mo`;
+
+                                  const regularPrice = userSeesPromo
+                                    ? (billingInterval === "annual"
+                                      ? (annualPlan.regularPrice ? `$${(annualPlan.regularPrice / 12).toFixed(2)}/mo` : null)
+                                      : (monthlyPlan.regularPrice ? `$${monthlyPlan.regularPrice.toFixed(2)}/mo` : null))
+                                    : null;
 
                                   const billedDesc = billingInterval === "annual"
-                                    ? `Billed annually as $${annualPlan.price}`
+                                    ? `Billed annually as $${userSeesPromo ? annualPlan.price : (annualPlan.regularPrice || annualPlan.price)}`
                                     : null;
 
                                   return (
