@@ -1677,8 +1677,8 @@ export default function Index() {
               </div>
 
               {/* Pricing Cards Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
-                {["standard", "growth", "pro"].map((key) => {
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 items-stretch">
+                {["starter", "standard", "growth", "pro"].map((key) => {
                   const planKey = `${key}_${billingInterval}`;
                   const plan = PLANS[planKey];
                   if (!plan) return null;
@@ -1688,7 +1688,8 @@ export default function Index() {
                   // The merchant is charged plan.price; the headline here always matches it.
                   // regMonthly/regAnnual are the strike-through "regular" price (plan.regularPrice).
                   const overlayBadges = {
-                    standard: "Best for Starters",
+                    starter: "Lite Syncing",
+                    standard: "Best Value",
                     growth: "Most Popular",
                     pro: "Concierge Setup Included",
                   };
@@ -1964,15 +1965,16 @@ export default function Index() {
                               </div>
 
                               {/* Pricing Cards Grid */}
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
-                                {["standard", "growth", "pro"].map((key) => {
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 items-stretch">
+                                {["starter", "standard", "growth", "pro"].map((key) => {
                                   const planKey = `${key}_${billingInterval}`;
                                   const plan = PLANS[planKey];
                                   if (!plan) return null;
                                   const isHighlighted = key === "growth";
                                   
                                   const overlayBadges = {
-                                    standard: "Best for Starters",
+                                    starter: "Lite Syncing",
+                                    standard: "Best Value",
                                     growth: "Most Popular",
                                     pro: "Concierge Setup Included",
                                   };
@@ -2179,15 +2181,16 @@ export default function Index() {
                               </div>
 
                               {/* Pricing Cards Grid */}
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
-                                {["standard", "growth", "pro"].map((key) => {
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 items-stretch">
+                                {["starter", "standard", "growth", "pro"].map((key) => {
                                   const planKey = `${key}_${billingInterval}`;
                                   const plan = PLANS[planKey];
                                   if (!plan) return null;
                                   const isHighlighted = key === "growth";
                                   
                                   const overlayBadges = {
-                                    standard: "Best for Starters",
+                                    starter: "Lite Syncing",
+                                    standard: "Best Value",
                                     growth: "Most Popular",
                                     pro: "Concierge Setup Included",
                                   };
