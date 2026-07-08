@@ -369,6 +369,10 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
   const plan = PLANS[planKey];
   if (!plan) throw new Error("Plan not found");
 
+  const currentSub = await prisma.subscription.findUnique({
+    where: { shopDomain: shop }
+  });
+
   const activePaidCount = await prisma.subscription.count({
     where: {
       planName: {
@@ -380,17 +384,15 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
     },
   });
   const isPromoActive = activePaidCount < 10;
+  const userSeesPromo = isPromoActive || currentSub?.isPromoLocked === true;
   
   let chargedPrice = plan.price;
-  if (!isPromoActive && planKey !== "free") {
+  if (!userSeesPromo && planKey !== "free") {
     chargedPrice = plan.regularPrice || plan.price;
   }
 
   // Calculate remaining trial days if they are upgrading from the free trial
   let trialDays = 0;
-  const currentSub = await prisma.subscription.findUnique({
-    where: { shopDomain: shop }
-  });
   if (currentSub && currentSub.planName === "trial" && currentSub.trialEndDate) {
     const diffMs = new Date(currentSub.trialEndDate).getTime() - Date.now();
     if (diffMs > 0) {
