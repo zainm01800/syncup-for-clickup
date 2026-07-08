@@ -2,7 +2,6 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { PLANS } from "../plans";
 import { logActivity, handleDowngradeToListLimit } from "../clickup.server";
-import { isPromoActiveGlobally } from "../billing.server";
 
 const PLAN_NAME_MAP = {
   "SyncUp Starter Monthly": "starter_monthly",
@@ -56,8 +55,6 @@ export const action = async ({ request }) => {
       return new Response();
     }
 
-    const promoLocked = await isPromoActiveGlobally();
-
     // Resolve safe billing cycle start date to prevent overwriting trial carry-overs or active cycles
     let billingCycleStart = new Date();
     if (sub) {
@@ -80,7 +77,6 @@ export const action = async ({ request }) => {
         annualBilling: plan.annual,
         pendingPlanName: null,
         pendingShopifyChargeId: null,
-        isPromoLocked: promoLocked,
       },
       create: {
         shopDomain: shop,
@@ -93,7 +89,6 @@ export const action = async ({ request }) => {
         annualBilling: plan.annual,
         trialStartDate: new Date(),
         trialEndDate: new Date(),
-        isPromoLocked: promoLocked,
       },
     });
 

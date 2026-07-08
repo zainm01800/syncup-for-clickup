@@ -17,13 +17,7 @@ async function logActivity(shop, eventType, description) {
     .catch((e) => console.error("Billing logActivity failed:", e));
 }
 
-// Whether the global "launch special" promo pool still has free slots. This
-// controls the price charged to NEW subscribers and the scarcity banner. It does
-// NOT control what an already-grandfathered merchant sees — that is governed by
-// their own isPromoLocked flag (see activateSubscription / userSeesPromo).
-export async function isPromoActiveGlobally() {
-  return false;
-}
+
 
 export async function getOrCreateSubscription(shop) {
   let sub = await prisma.subscription.findUnique({
@@ -90,8 +84,6 @@ export async function getOrCreateSubscription(shop) {
             pendingPlanName: null,
             pendingShopifyChargeId: null,
             ordersSyncedThisMonth: 0,
-            // Keep promo lock sticky across a scheduled upgrade activation.
-            isPromoLocked: sub.isPromoLocked || (await isPromoActiveGlobally()),
           },
         });
         await logActivity(shop, "plan_activated", `Scheduled plan "${plan.name}" is now active`);
@@ -470,11 +462,6 @@ export async function activateSubscription(shop, planKey, chargeId) {
     billingCycleStart = new Date(currentSub.trialEndDate);
   }
 
-  // Lock in promo pricing for this merchant if the launch promo is still active
-  // at the moment they activate. Once locked, they keep seeing promo prices even
-  // after the global pool fills (see isPromoLocked on the Subscription model).
-  const promoLocked = await isPromoActiveGlobally();
-
   return prisma.subscription.upsert({
     where: { shopDomain: shop },
     update: {
@@ -487,7 +474,6 @@ export async function activateSubscription(shop, planKey, chargeId) {
       annualBilling: plan.annual,
       pendingPlanName: null,
       pendingShopifyChargeId: null,
-      isPromoLocked: promoLocked,
     },
     create: {
       shopDomain: shop,
@@ -502,7 +488,6 @@ export async function activateSubscription(shop, planKey, chargeId) {
       trialEndDate: now,
       pendingPlanName: null,
       pendingShopifyChargeId: null,
-      isPromoLocked: promoLocked,
     },
   });
 }
