@@ -369,57 +369,94 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
   const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?shop=${encodeURIComponent(shop)}&activated=${planKey}&replacement_behavior=${replacementBehavior}`;
   const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
-  const res = await admin.graphql(
-    `#graphql
-    mutation CreateSubscription(
-      $name: String!
-      $lineItems: [AppSubscriptionLineItemInput!]!
-      $returnUrl: URL!
-      $test: Boolean
-      $replacementBehavior: AppSubscriptionReplacementBehavior
-    ) {
-      appSubscriptionCreate(
-        name: $name
-        lineItems: $lineItems
-        returnUrl: $returnUrl
-        test: $test
-        replacementBehavior: $replacementBehavior
+  // Check if store is a development/test store automatically via GraphQL
+  let isTestCharge = process.env.SHOPIFY_BILLING_TEST === "true" || shop === "syncup-test-store.myshopify.com";
+
+  if (!isTestCharge) {
+    try {
+      const shopRes = await admin.graphql(`#graphql
+        query CheckShopPlan {
+          shop {
+            plan {
+              partnerDevelopment
+              displayName
+            }
+          }
+        }
+      `);
+      const { data: shopData } = await shopRes.json();
+      const planInfo = shopData?.shop?.plan;
+      if (
+        planInfo?.partnerDevelopment || 
+        planInfo?.displayName?.toLowerCase().includes("test") ||
+        planInfo?.displayName?.toLowerCase().includes("development") ||
+        planInfo?.displayName?.toLowerCase().includes("partner")
       ) {
-        appSubscription {
-          id
-          status
-        }
-        confirmationUrl
-        userErrors {
-          field
-          message
-        }
+        isTestCharge = true;
       }
-    }`,
-    {
-      variables: {
-        name: plan.shopifyPlanName,
-        lineItems: [
-          {
-            plan: {
-              appRecurringPricingDetails: {
-                price: { amount: parseFloat(chargedPrice.toFixed(2)), currencyCode: "USD" },
-                interval: interval,
-                ...(trialDays > 0 ? { trialDays } : {}),
+    } catch (e) {
+      console.warn("Could not check shop plan type, defaulting test check:", e);
+    }
+  }
+
+  const executeSubscriptionMutation = async (isTest) => {
+    const res = await admin.graphql(
+      `#graphql
+      mutation CreateSubscription(
+        $name: String!
+        $lineItems: [AppSubscriptionLineItemInput!]!
+        $returnUrl: URL!
+        $test: Boolean
+        $replacementBehavior: AppSubscriptionReplacementBehavior
+      ) {
+        appSubscriptionCreate(
+          name: $name
+          lineItems: $lineItems
+          returnUrl: $returnUrl
+          test: $test
+          replacementBehavior: $replacementBehavior
+        ) {
+          appSubscription {
+            id
+            status
+          }
+          confirmationUrl
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+      {
+        variables: {
+          name: plan.shopifyPlanName,
+          lineItems: [
+            {
+              plan: {
+                appRecurringPricingDetails: {
+                  price: { amount: parseFloat(chargedPrice.toFixed(2)), currencyCode: "USD" },
+                  interval: interval,
+                  ...(trialDays > 0 ? { trialDays } : {}),
+                },
               },
             },
-          },
-        ],
-        returnUrl,
-        // Use real charges in production. Set SHOPIFY_BILLING_TEST=true in .env for local sandbox testing.
-        test: process.env.SHOPIFY_BILLING_TEST === "true" || shop === "syncup-test-store.myshopify.com",
-        replacementBehavior: replacementBehavior,
-      },
-    }
-  );
+          ],
+          returnUrl,
+          test: isTest,
+          replacementBehavior: replacementBehavior,
+        },
+      }
+    );
+    const { data } = await res.json();
+    return data?.appSubscriptionCreate;
+  };
 
-  const { data } = await res.json();
-  const result = data?.appSubscriptionCreate;
+  let result = await executeSubscriptionMutation(isTestCharge);
+
+  // Fallback: If Shopify rejected due to test store requirement, retry with test: true
+  if (result?.userErrors?.some(e => e.message?.toLowerCase().includes("test") || e.message?.toLowerCase().includes("development"))) {
+    result = await executeSubscriptionMutation(true);
+  }
 
   if (result?.userErrors?.length > 0) {
     throw new Error(result.userErrors.map((e) => e.message).join(", "));

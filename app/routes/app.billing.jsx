@@ -350,6 +350,8 @@ export default function BillingPage() {
       annualPriceDesc: "Free forever",
       billedDesc: "Billed monthly",
       monthlyEquivalent: "0",
+      regMonthly: "$0/mo",
+      regAnnual: "$0",
     },
     starter: {
       key: "starter",
@@ -358,6 +360,8 @@ export default function BillingPage() {
       annualPriceDesc: "$8.25/mo",
       billedDesc: "Billed annually as $99",
       monthlyEquivalent: "8.25",
+      regMonthly: "$14.99/mo",
+      regAnnual: "$149",
     },
     standard: {
       key: "standard",
@@ -366,6 +370,8 @@ export default function BillingPage() {
       annualPriceDesc: "$17.92/mo",
       billedDesc: "Billed annually as $215",
       monthlyEquivalent: "17.92",
+      regMonthly: "$29.99/mo",
+      regAnnual: "$323",
     },
     growth: {
       key: "growth",
@@ -374,6 +380,8 @@ export default function BillingPage() {
       annualPriceDesc: "$35.92/mo",
       billedDesc: "Billed annually as $431",
       monthlyEquivalent: "35.92",
+      regMonthly: "$49.99/mo",
+      regAnnual: "$539",
     },
     pro: {
       key: "pro",
@@ -382,6 +390,8 @@ export default function BillingPage() {
       annualPriceDesc: "$71.92/mo",
       billedDesc: "Billed annually as $863",
       monthlyEquivalent: "71.92",
+      regMonthly: "$99.99/mo",
+      regAnnual: "$1079",
     },
   };
 
