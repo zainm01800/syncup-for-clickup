@@ -5,6 +5,11 @@ import { login } from "../../shopify.server";
 import { loginErrorMessage } from "./error.server";
 
 export const loader = async ({ request }) => {
+  const url = new URL(request.url);
+  const shop = url.searchParams.get("shop");
+  if (shop) {
+    return await login(request);
+  }
   const errors = loginErrorMessage(await login(request));
 
   return { errors };

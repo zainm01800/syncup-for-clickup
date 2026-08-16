@@ -366,7 +366,9 @@ export async function createShopifySubscription(admin, shop, planKey, replacemen
     }
   }
 
-  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing?shop=${encodeURIComponent(shop)}&activated=${planKey}&replacement_behavior=${replacementBehavior}`;
+  const shopHandle = shop.replace(".myshopify.com", "");
+  const apiKey = process.env.SHOPIFY_API_KEY;
+  const returnUrl = `https://admin.shopify.com/store/${shopHandle}/apps/${apiKey}/app/billing?activated=${planKey}&replacement_behavior=${replacementBehavior}`;
   const interval = plan.interval; // ANNUAL or EVERY_30_DAYS
 
   // Check if store is a development/test store automatically via GraphQL
