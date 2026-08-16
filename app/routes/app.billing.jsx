@@ -733,7 +733,7 @@ export default function BillingPage() {
           gap: 24,
           alignItems: "stretch",
         }}>
-          {["starter", "standard", "growth", "pro"].map((key) => {
+          {["starter", "standard", "growth"].map((key) => {
             const planKey = key === "free" ? "free" : `${key}_${billingInterval}`;
             const plan = PLANS[planKey];
             if (!plan) return null;
