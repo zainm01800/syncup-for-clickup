@@ -252,7 +252,8 @@ async function pollNotionFulfillments(shopDomain) {
   const sub = await prisma.subscription.findUnique({
     where: { shopDomain }
   });
-  const isGrowthOrPro = sub && (sub.planName.startsWith("growth") || sub.planName.startsWith("pro") || sub.planName === "trial");
+  const isTrialActive = sub && sub.planName === "trial" && sub.trialEndDate && new Date() <= new Date(sub.trialEndDate);
+  const isGrowthOrPro = sub && (sub.planName.startsWith("growth") || sub.planName.startsWith("pro") || isTrialActive);
   if (!sub || !isGrowthOrPro || !sub.twoWaySyncEnabled) {
     return;
   }

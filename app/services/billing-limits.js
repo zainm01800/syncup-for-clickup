@@ -13,8 +13,9 @@ export async function assertBillingLimitEnforcement(shopDomain) {
     throw new Error("Associated shop subscription not found");
   }
 
-  const planName = sub.planName || "trial";
-  const plan = PLANS[planName] || (planName === "trial" ? { listLimit: 5 } : { listLimit: 1 });
+  const isTrialActive = sub.planName === "trial" && sub.trialEndDate && new Date() <= new Date(sub.trialEndDate);
+  const planName = isTrialActive ? "trial" : (sub.planName === "trial" ? "free" : (sub.planName || "free"));
+  const plan = PLANS[planName] || (isTrialActive ? { listLimit: 5 } : { listLimit: 1 });
   const limit = plan.listLimit || 1;
 
   // Sum active connection targets across all active platform connections
@@ -141,8 +142,9 @@ export async function executeWorkspacePlatformTransition(
 
     // 5. Run the billing limits validation check within the transaction context
     const sub = await tx.subscription.findUnique({ where: { shopDomain } });
-    const planName = sub?.planName || "trial";
-    const plan = PLANS[planName] || (planName === "trial" ? { listLimit: 5 } : { listLimit: 1 });
+    const isTrialActive = sub?.planName === "trial" && sub?.trialEndDate && new Date() <= new Date(sub.trialEndDate);
+    const planName = isTrialActive ? "trial" : (sub?.planName === "trial" ? "free" : (sub?.planName || "free"));
+    const plan = PLANS[planName] || (isTrialActive ? { listLimit: 5 } : { listLimit: 1 });
     const limit = plan.listLimit || 1;
 
     const totalActiveTargets = await tx.syncTarget.count({

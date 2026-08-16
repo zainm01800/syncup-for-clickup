@@ -72,7 +72,8 @@ export const action = async ({ request }) => {
       where: { shopDomain: record.shopDomain }
     });
 
-    const isGrowthOrPro = sub && (sub.planName.startsWith("growth") || sub.planName.startsWith("pro") || sub.planName === "trial");
+    const isTrialActive = sub && sub.planName === "trial" && sub.trialEndDate && new Date() <= new Date(sub.trialEndDate);
+    const isGrowthOrPro = sub && (sub.planName.startsWith("growth") || sub.planName.startsWith("pro") || isTrialActive);
     if (!sub || !isGrowthOrPro || !sub.twoWaySyncEnabled) {
       return json({ ok: true, message: "Two-way sync is not enabled or supported by your current plan" });
     }

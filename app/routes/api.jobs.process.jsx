@@ -153,7 +153,8 @@ async function syncToPlatformConnection({
   NotionAdapter
 }) {
   const shopDomain = connection.shopDomain;
-  const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || subscription.planName === "trial";
+  const isTrialActive = subscription.planName === "trial" && subscription.trialEndDate && new Date() <= new Date(subscription.trialEndDate);
+  const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro") || isTrialActive;
 
   // 1. Determine target list ID using routing constraints
   let targetListId = null;

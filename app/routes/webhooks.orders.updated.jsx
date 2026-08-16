@@ -165,7 +165,8 @@ export const action = async ({ request }) => {
         error
       );
 
-      const hasRetryFeature = subscription.planName === "trial" || subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
+      const isTrialActive = subscription.planName === "trial" && subscription.trialEndDate && new Date() <= new Date(subscription.trialEndDate);
+      const hasRetryFeature = isTrialActive || subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
       if (hasRetryFeature) {
         logActivity(
           shop,

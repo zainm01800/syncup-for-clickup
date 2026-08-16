@@ -150,10 +150,14 @@ export const loader = async ({ request }) => {
     }
 
     // Destination Fields Fetch
+    const isTrialActive =
+      subscription.planName === "trial" &&
+      subscription.trialEndDate &&
+      new Date() <= new Date(subscription.trialEndDate);
     const isGrowthOrPro =
       subscription.planName.startsWith("growth") ||
       subscription.planName.startsWith("pro") ||
-      subscription.planName === "trial";
+      isTrialActive;
 
     if (connection.listId && isGrowthOrPro) {
       if (cachedFields && (now - cachedFields.timestamp < CACHE_TTL)) {
@@ -310,7 +314,8 @@ export const loader = async ({ request }) => {
     take: 10,
   });
 
-  const plan = PLANS[subscription.planName] || (subscription.planName === "trial" ? { name: "Free Trial", listLimit: 5 } : { name: "Expired/Cancelled", listLimit: 1 });
+  const isTrialActive = subscription.planName === "trial" && subscription.trialEndDate && new Date() <= new Date(subscription.trialEndDate);
+  const plan = PLANS[subscription.planName] || (isTrialActive ? { name: "Free Trial", listLimit: 5 } : { name: "Free Plan", listLimit: 1 });
   const listLimit = plan.listLimit || 1;
 
   if (!latestOrder) {
@@ -477,7 +482,8 @@ export const action = async ({ request }) => {
       }
 
       const sub = await getOrCreateSubscription(shop);
-      const plan = PLANS[sub.planName] || (sub.planName === "trial" ? { listLimit: 5 } : { listLimit: 1 });
+      const isSubTrialActive = sub.planName === "trial" && sub.trialEndDate && new Date() <= new Date(sub.trialEndDate);
+      const plan = PLANS[sub.planName] || (isSubTrialActive ? { listLimit: 5 } : { listLimit: 1 });
       const limit = plan.listLimit || 1;
 
       if (conns.length > limit) {
@@ -754,10 +760,14 @@ export const action = async ({ request }) => {
       }
 
       const sub = await getOrCreateSubscription(shop);
+      const isSettingsTrialActive =
+        sub.planName === "trial" &&
+        sub.trialEndDate &&
+        new Date() <= new Date(sub.trialEndDate);
       const isGrowthOrPro =
         sub.planName.startsWith("growth") ||
         sub.planName.startsWith("pro") ||
-        sub.planName === "trial";
+        isSettingsTrialActive;
 
       await prisma.subscription.update({
         where: { shopDomain: shop },
@@ -2886,7 +2896,7 @@ export default function Index() {
                           {/* Custom Field Mapping */}
                           <section style={styles.card}>
                         {(() => {
-                          const isTrial = subscription.planName === "trial";
+                          const isTrial = subscription.planName === "trial" && subscription.trialEndDate && new Date() <= new Date(subscription.trialEndDate);
                           const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
                           const isMappingUnlocked = isGrowthOrPro || isTrial;
                           const platformName = selectedPlatform === "clickup" ? "ClickUp" : selectedPlatform === "monday" ? "Monday.com" : "Notion";
@@ -3604,7 +3614,7 @@ export default function Index() {
 
                       {/* Sync Analytics Card */}
                       {(() => {
-                        const isTrial = subscription.planName === "trial";
+                        const isTrial = subscription.planName === "trial" && subscription.trialEndDate && new Date() <= new Date(subscription.trialEndDate);
                         const isGrowthOrPro = subscription.planName.startsWith("growth") || subscription.planName.startsWith("pro");
                         const isAnalyticsUnlocked = isGrowthOrPro || isTrial;
 
